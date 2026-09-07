@@ -27,6 +27,9 @@ final class MM_Settings {
 	const CLEAR_ACTION = 'mm_clear_token';
 	const TEST_ACTION  = 'mm_test_connection';
 
+	/** Transient carrying admin notices across the post-redirect-get bounce. */
+	const NOTICE_TRANSIENT = 'mm_admin_notices';
+
 	/**
 	 * Singleton instance.
 	 *
@@ -146,9 +149,9 @@ final class MM_Settings {
 		<div class="wrap mm-settings">
 			<h1><?php esc_html_e( 'Questrade Tracker &amp; Tax Assistant', 'money-maker' ); ?></h1>
 
-			<?php settings_errors( 'mm_settings' ); ?>
-
 			<?php
+			$this->render_notices();
+
 			$this->render_environment_section();
 			$this->render_encryption_section();
 			$this->render_connection_section();
@@ -634,21 +637,48 @@ final class MM_Settings {
 	}
 
 	/**
-	 * Stash queued admin notices in a transient (they do not survive the
-	 * redirect otherwise) and bounce back to the settings screen.
+	 * Stash queued notices in a private transient and bounce back to the
+	 * settings screen.
+	 *
+	 * We deliberately do NOT use core's `settings_errors` transient +
+	 * `settings-updated` query arg: on an `add_options_page()` screen that path
+	 * renders each notice twice (once by core, once by our explicit call). A
+	 * private transient rendered by render_notices() shows each exactly once.
 	 */
 	private function persist_notices_and_redirect(): void {
-		set_transient( 'settings_errors', get_settings_errors(), 30 );
+		$notices = get_settings_errors();
+
+		if ( ! empty( $notices ) ) {
+			set_transient( self::NOTICE_TRANSIENT, $notices, MINUTE_IN_SECONDS );
+		}
 
 		wp_safe_redirect(
-			add_query_arg(
-				array(
-					'page'             => self::MENU_SLUG,
-					'settings-updated' => 'true',
-				),
-				admin_url( 'options-general.php' )
-			)
+			add_query_arg( array( 'page' => self::MENU_SLUG ), admin_url( 'options-general.php' ) )
 		);
 		exit;
+	}
+
+	/**
+	 * Render (and clear) any notices queued by the last form submission.
+	 */
+	private function render_notices(): void {
+		$notices = get_transient( self::NOTICE_TRANSIENT );
+
+		if ( empty( $notices ) || ! is_array( $notices ) ) {
+			return;
+		}
+
+		delete_transient( self::NOTICE_TRANSIENT );
+
+		foreach ( $notices as $notice ) {
+			$type  = isset( $notice['type'] ) ? (string) $notice['type'] : 'error';
+			$class = 'updated' === $type ? 'notice-success' : 'notice-' . sanitize_html_class( $type );
+
+			printf(
+				'<div class="notice %s is-dismissible"><p>%s</p></div>',
+				esc_attr( $class ),
+				esc_html( isset( $notice['message'] ) ? (string) $notice['message'] : '' )
+			);
+		}
 	}
 }

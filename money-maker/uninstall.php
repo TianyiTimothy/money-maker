@@ -15,8 +15,8 @@ delete_option( 'mm_settings' );       // M1a: environment toggle.
 delete_option( 'mm_token_bundle' );    // M1c: encrypted Questrade token bundle.
 delete_option( 'mm_token_lock' );      // M1c: token-refresh lock.
 
-// Transients used for admin notices.
-delete_transient( 'settings_errors' );
+// Transient carrying admin notices across redirects.
+delete_transient( 'mm_admin_notices' );
 
 // Out-of-database crypto key file (M1b). Kept in sync with
 // MM_Crypto::KEY_FILENAME / MM_Crypto::key_file_path(). Not removed when the

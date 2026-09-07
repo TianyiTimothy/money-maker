@@ -80,7 +80,7 @@ final class MM_Questrade_Client {
 		}
 
 		try {
-			$response = self::post_token_request( $refresh_token, $environment );
+			$response = self::redeem_refresh_token( $refresh_token, $environment );
 
 			if ( is_wp_error( $response ) ) {
 				return $response;
@@ -158,7 +158,7 @@ final class MM_Questrade_Client {
 				return $bundle;
 			}
 
-			$response = self::post_token_request( $bundle['refresh_token'], $environment );
+			$response = self::redeem_refresh_token( $bundle['refresh_token'], $environment );
 
 			if ( is_wp_error( $response ) ) {
 				return $response;
@@ -329,25 +329,30 @@ final class MM_Questrade_Client {
 	}
 
 	/**
-	 * POST to the oauth2/token endpoint and return the decoded response.
+	 * Call the oauth2/token endpoint and return the decoded response.
+	 *
+	 * Questrade documents this as a GET with the grant type and refresh token in
+	 * the query string.
 	 *
 	 * @param string $refresh_token
 	 * @param string $environment
 	 * @return array|WP_Error
 	 */
-	private static function post_token_request( string $refresh_token, string $environment ) {
+	private static function redeem_refresh_token( string $refresh_token, string $environment ) {
 		$host = self::LOGIN_HOSTS[ $environment ] ?? self::LOGIN_HOSTS['practice'];
-		$url  = $host . '/oauth2/token';
+		$url  = add_query_arg(
+			array(
+				'grant_type'    => 'refresh_token',
+				'refresh_token' => $refresh_token,
+			),
+			$host . '/oauth2/token'
+		);
 
-		$response = wp_remote_post(
+		$response = wp_remote_get(
 			$url,
 			array(
 				'timeout' => self::HTTP_TIMEOUT,
 				'headers' => array( 'Accept' => 'application/json' ),
-				'body'    => array(
-					'grant_type'    => 'refresh_token',
-					'refresh_token' => $refresh_token,
-				),
 			)
 		);
 

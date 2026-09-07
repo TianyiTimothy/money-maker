@@ -246,8 +246,9 @@ _Last updated: 2026-09-07 — keep this section current._
       just refreshed); new bundle is persisted *before* returning. Proactive refresh at
       `PROACTIVE_REFRESH_MARGIN` (300s) before expiry. `request($method,$path,$args)`:
       up to 3 attempts, 401 → one forced refresh + retry, 429 → sleep `Retry-After`
-      (capped 10s) + retry. `test_connection()` = `GET v1/time`. Token endpoint is
-      `POST {host}/oauth2/token` form body.
+      (capped 10s) + retry. `test_connection()` = `GET v1/time`. Token endpoint call is
+      `GET {login-host}/oauth2/token?grant_type=refresh_token&refresh_token=…` (per
+      Questrade docs — no client id/secret for a personal app).
   * `MM_Settings`: new "Questrade connection" section — token status (connected / expiry
     via `human_time_diff` / env-mismatch / api-server host), refresh-token paste field
     (`<input type=password>`, **not** `sanitize_text_field` — trimmed only, tokens are
@@ -256,6 +257,11 @@ _Last updated: 2026-09-07 — keep this section current._
     `wp_ajax_mm_test_connection` (nonce `mm_test_connection`). New `assets/admin.js`
     (vanilla, `fetch`, no jQuery) enqueued + `wp_localize_script( 'mmAdmin', … )` only on
     this screen. `uninstall.php` deletes `mm_token_bundle` + `mm_token_lock`.
+  * **Admin notices:** do NOT use core's `settings_errors` transient + `settings-updated`
+    query arg on this `add_options_page()` screen — it renders every notice twice.
+    Handlers call `add_settings_error()` then `persist_notices_and_redirect()` stashes
+    `get_settings_errors()` into a private `mm_admin_notices` transient; `render_notices()`
+    prints and clears it. No `settings_errors()` call anywhere.
 * Options in use: `mm_settings` = `{ environment }`; `mm_token_bundle` (encrypted bundle,
   autoload no); `mm_token_lock` (refresh lock, autoload no).
 * Out-of-DB files: `WP_CONTENT_DIR/mm-crypto-key.php` (key file, gitignored, `chmod 0600`,
