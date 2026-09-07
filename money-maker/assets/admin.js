@@ -1,8 +1,9 @@
 /**
- * Questrade Tracker & Tax Assistant — admin settings screen.
+ * Questrade Tracker & Tax Assistant — admin UI.
  *
- * Only behaviour here is the "Test connection" button: it POSTs to admin-ajax,
- * which calls Questrade's GET v1/time, and shows the result inline.
+ * Only behaviour here is the "Test connection" button (present on the Dashboard
+ * and Connection screens): it POSTs to admin-ajax, which calls Questrade's
+ * GET v1/time, and shows the result inline.
  */
 ( function () {
 	'use strict';

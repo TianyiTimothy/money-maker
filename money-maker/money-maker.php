@@ -29,6 +29,7 @@ require_once MM_INCLUDES_DIR . 'class-mm-lock.php';
 require_once MM_INCLUDES_DIR . 'class-mm-token-store.php';
 require_once MM_INCLUDES_DIR . 'class-mm-questrade-client.php';
 require_once MM_INCLUDES_DIR . 'class-mm-settings.php';
+require_once MM_INCLUDES_DIR . 'class-mm-admin.php';
 
 /**
  * Wire up the plugin's hooks once WordPress is loaded.
@@ -40,6 +41,7 @@ function mm_bootstrap() {
 	load_plugin_textdomain( 'money-maker', false, dirname( MM_PLUGIN_BASENAME ) . '/languages' );
 
 	MM_Settings::instance()->register();
+	MM_Admin::instance()->register();
 }
 add_action( 'plugins_loaded', 'mm_bootstrap' );
 
