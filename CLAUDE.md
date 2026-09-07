@@ -120,12 +120,25 @@ Use `dbDelta()` for schema; store a `mm_db_version` option and migrate on upgrad
 * Large backfills can exceed rate limits and PHP execution time — chunk and queue.
 
 ## 7. Development Workflow
+
+### Milestones
 * **Milestone 1:** Settings page, auth flow (safe save/refresh with lock + encryption),
   test-connection button, practice/live toggle.
 * **Milestone 2:** Custom tables + `dbDelta` migrations; scheduled + manual sync for
   accounts and activities with dedup; FX rate fetching.
 * **Milestone 3:** Frontend/admin dashboard — positions, pooled ACB, realized gains/losses,
   superficial-loss warnings, historical charts.
+
+### Git
+* Remote: `origin` → https://github.com/TianyiTimothy/money-maker (public). Branch `main`.
+* One short-lived branch per milestone/feature (e.g. `milestone-1-auth`); land it via a PR
+  (`gh pr create`), squash-merge, delete the branch.
+* **Conventional Commits** (`feat:`, `fix:`, `chore:`, `docs:`, `refactor:`, `test:`),
+  imperative mood, body explaining *why* when non-obvious.
+* Commit at logical checkpoints, not per file. **Never auto-commit; never push without
+  asking.** End commit messages with the Co-Authored-By trailer.
+* Tag releases with SemVer (`v0.1.0`) once a milestone lands.
+* Commit identity is set repo-local: Timothy Zhang &lt;timothy.tudis@gmail.com&gt;.
 
 ## 8. Claude AI Persona Instructions
 * Act as a Senior WordPress Developer and FinTech Engineer.
@@ -135,3 +148,18 @@ Use `dbDelta()` for schema; store a `mm_db_version` option and migrate on upgrad
 * When creating a **new** file, write it complete and state its path. When changing an
   **existing** file, give targeted edits, not a full re-dump.
 * Do not add dependencies or build tooling without asking.
+* **Claude may (and should) update this file.** Keep it current as the source of truth —
+  when decisions change, conventions are set, a milestone completes, or something
+  non-obvious is learned, edit the relevant section (and §9) in the same commit as the
+  work. Mention the update in your reply. Don't rewrite wholesale or drop context without
+  flagging it.
+
+## 9. Current Status
+_Last updated: 2026-09-07 — keep this section current._
+* Repo scaffolded and pushed to `origin/main`. No code yet beyond the plugin bootstrap
+  (`money-maker/money-maker.php`: header + `MM_*` path constants).
+* **Next up: Milestone 1**, not started. Begin on branch `milestone-1-auth`.
+* Local WordPress test install (SiteGround `wp-content/`) is present but the plugin is not
+  yet symlinked into `wp-content/plugins/`. No `MM_CRYPTO_KEY` defined yet.
+* No Questrade refresh token has been entered/tested yet.
+* No dependencies, no Composer/npm, no CI, no tests yet.
