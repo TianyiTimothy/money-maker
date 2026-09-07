@@ -123,11 +123,29 @@ Use `dbDelta()` for schema; store a `mm_db_version` option and migrate on upgrad
 
 ### Milestones
 * **Milestone 1:** Settings page, auth flow (safe save/refresh with lock + encryption),
-  test-connection button, practice/live toggle.
+  test-connection button, practice/live toggle. Split into testable sub-steps:
+  * **M1a:** plugin skeleton (bootstrap wiring, activation/deactivation), settings page
+    shell, practice/live environment toggle persisted to `mm_settings`.
+  * **M1b:** `MM_Crypto` (libsodium `secretbox`) + key-management UI. Key resolution:
+    `MM_CRYPTO_KEY` constant → `WP_CONTENT_DIR/mm-crypto-key.php` (UI-written, gitignored,
+    out of DB) → not configured. Generate / rotate from the settings page.
+  * **M1c — done:** `MM_Token_Store` (encrypted bundle option, rolling 5-token history),
+    `MM_Lock` (option-based `mm_token_lock` + stale takeover), refresh-token paste field,
+    `MM_Questrade_Client::exchange_refresh_token()`.
+  * **M1d — done:** `get_valid_token()` (proactive refresh under lock), `request()` with
+    401/429 retry, "Test connection" button + AJAX (`GET v1/time`).
+  * **M1e — done:** admin UI moved out of Settings into its own top-level "Money Maker"
+    menu (`MM_Admin`, view layer); rebuilt as a card-based Dashboard + Connection +
+    Settings tabs. `MM_Settings` slimmed to storage + form handlers.
 * **Milestone 2:** Custom tables + `dbDelta` migrations; scheduled + manual sync for
   accounts and activities with dedup; FX rate fetching.
 * **Milestone 3:** Frontend/admin dashboard — positions, pooled ACB, realized gains/losses,
   superficial-loss warnings, historical charts.
+
+### Testing
+* **No automated test suite.** The user tests each sub-step manually in the local
+  WordPress install. Do not add PHPUnit, Composer, npm, or CI without asking first.
+* When finishing a sub-step, give the user a short manual test checklist.
 
 ### Git
 * Remote: `origin` → https://github.com/TianyiTimothy/money-maker (public). Branch `main`.
@@ -154,12 +172,125 @@ Use `dbDelta()` for schema; store a `mm_db_version` option and migrate on upgrad
   work. Mention the update in your reply. Don't rewrite wholesale or drop context without
   flagging it.
 
+### 8.1 Coding Conventions — Backend & Frontend
+Follow these on every change so future sessions stay consistent.
+
+**PHP / backend**
+* One class per file at `money-maker/includes/class-mm-{name}.php`; class names `MM_{Name}`.
+  Classes are passive — they expose a `register()` (or similar) that adds their hooks, and
+  `money-maker.php` calls it. Do not add hooks from constructors. Stateless static-only
+  utilities with no hooks (e.g. `MM_Crypto`) are `require_once`d directly and have no
+  `register()`.
+* Admin UI split: `MM_Admin` is the view + navigation layer (top-level "Money Maker" menu,
+  its Dashboard / Connection / Settings tabs, shared page chrome, asset enqueue, the
+  "Test connection" AJAX, and the shared notice transient). `MM_Settings` is storage +
+  `admin_post_*` form handlers only — it renders nothing. Handlers finish with
+  `MM_Admin::redirect_with_notices( $slug )`.
+* PHP 8.0+. Type-hint parameters and returns where practical. `defined( 'ABSPATH' ) || exit;`
+  at the top of every file.
+* Every DB read/write through `$wpdb->prepare()`. Options are `mm_*`; token/financial
+  options use `autoload = 'no'`. Custom hooks are namespaced `mm/*`.
+* Every admin-post / AJAX handler: `current_user_can( 'manage_options' )` **and** a nonce
+  (`check_admin_referer` / `check_ajax_referer`). No exceptions.
+* Sanitize on input (`sanitize_text_field`, `absint`, explicit whitelists like
+  `MM_Settings::ENVIRONMENTS`). Escape on output at the echo site (`esc_html`, `esc_attr`,
+  `esc_url`, `wp_kses_post`).
+* All user-facing strings via `__()` / `esc_html__()` / `esc_html_e()` with text domain
+  `money-maker`.
+* HTTP only via `wp_remote_*`. Surface failures as `WP_Error`; show them to the admin with
+  `add_settings_error` (persisted across redirects via the `settings_errors` transient).
+* **Never** echo or log a full token or account number — mask to the last 4 characters.
+
+**JS / CSS / frontend**
+* Enqueue with `wp_enqueue_script` / `wp_enqueue_style`, version `MM_VERSION`, and only on
+  this plugin's own admin screen (check the `$hook_suffix`).
+* Assets live in `money-maker/assets/`. Vanilla JS, no build step, no bundler. jQuery only
+  if a real need appears. No new JS/CSS dependencies without asking.
+* Pass server data to JS with `wp_localize_script` (nonces, ajax URL, strings) — no inline
+  `<script>` blobs.
+
 ## 9. Current Status
 _Last updated: 2026-09-07 — keep this section current._
-* Repo scaffolded and pushed to `origin/main`. No code yet beyond the plugin bootstrap
-  (`money-maker/money-maker.php`: header + `MM_*` path constants).
-* **Next up: Milestone 1**, not started. Begin on branch `milestone-1-auth`.
-* Local WordPress test install (SiteGround `wp-content/`) is present but the plugin is not
-  yet symlinked into `wp-content/plugins/`. No `MM_CRYPTO_KEY` defined yet.
-* No Questrade refresh token has been entered/tested yet.
-* No dependencies, no Composer/npm, no CI, no tests yet.
+* On branch `milestone-1-auth`. **Milestone 1 code-complete (M1a–M1e); M1a–M1d manually
+  tested and confirmed working (incl. against a real Questrade practice account). M1e
+  (admin UI reorg) pending a manual look, then squash-merge PR and move to Milestone 2.**
+  * **M1a — done, committed (`786be75`), manually tested.** Bootstrap wiring in
+    `money-maker.php` (`mm_bootstrap`, activation seeds `mm_settings`, deactivation
+    releases lock); `includes/class-mm-settings.php` (`MM_Settings` singleton — options
+    page under Settings, practice/live radio, `admin_post_mm_save_settings`);
+    `assets/admin.css`; `uninstall.php`. Branch not yet pushed — whole milestone lands
+    in one PR.
+  * **M1b — done, committed (`c79734d`), manually tested.** Branch still not pushed —
+    whole milestone lands in one PR. `includes/class-mm-crypto.php` (`MM_Crypto` — stateless static utility, no
+    hooks/`register()`; `sodium_crypto_secretbox` encrypt/decrypt with `mmc1:` base64
+    payload prefix; key resolution `MM_CRYPTO_KEY` constant →
+    `WP_CONTENT_DIR/mm-crypto-key.php` → none; `generate_key()` writes the file
+    atomically via `wp_tempnam`+`rename`, `chmod 0600`, fires `mm/crypto/key_generated`).
+    `MM_Settings` gains an "Encryption key" section (status, non-reversible key
+    fingerprint, generate/rotate button → `admin_post_mm_manage_crypto_key`) — render
+    split into `render_environment_section()` / `render_encryption_section()`, redirect
+    logic extracted to `persist_notices_and_redirect()`. `uninstall.php` deletes the key
+    file. `.gitignore` ignores `mm-crypto-key.php`. Rotate uses an inline `onsubmit`
+    confirm attribute (not a `<script>` blob).
+  * **M1c + M1d — done, committed (`a1dc0fa`, `e5fbf39`), manually tested.** Three
+    static-utility classes, all `require_once`d from `money-maker.php` (order: crypto →
+    lock → token-store → client → settings → admin):
+    * `includes/class-mm-lock.php` (`MM_Lock`) — option-based advisory lock
+      (`mm_token_lock`, autoload no) around every refresh. `acquire($max_wait=12)`
+      spin-waits (250ms poll); `add_option` is the compare-and-set primitive; a lock
+      older than `STALE_SECONDS` (30) is taken over. Per-request owner UUID so
+      `release()` never deletes a lock another process took over. `release()` called
+      defensively on deactivation and "forget token".
+    * `includes/class-mm-token-store.php` (`MM_Token_Store`) — the whole token response
+      (`access_token`, `refresh_token`, `api_server` [untrailingslashit], `token_type`,
+      computed `expires_at` = now + expires_in − 60s skew margin, `obtained_at`,
+      `environment`) JSON-encoded → `MM_Crypto::encrypt` → option `mm_token_bundle`
+      (autoload no). Rolling `refresh_history` (last 5, newest first) inside the same
+      bundle. `store_from_response()` is the write path; UI only ever sees masked values
+      (`mask()` → last 4 chars). `environment()` used for practice/live mismatch checks.
+    * `includes/class-mm-questrade-client.php` (`MM_Questrade_Client`) — OAuth hosts per
+      env (`practicelogin` / `login`; `api_server` for data calls always from the
+      bundle). `exchange_refresh_token()` and `get_valid_token($force=false)` both run
+      under `MM_Lock` and re-read the bundle inside the lock (another process may have
+      just refreshed); new bundle is persisted *before* returning. Proactive refresh at
+      `PROACTIVE_REFRESH_MARGIN` (300s) before expiry. `request($method,$path,$args)`:
+      up to 3 attempts, 401 → one forced refresh + retry, 429 → sleep `Retry-After`
+      (capped 10s) + retry. `test_connection()` = `GET v1/time`. Token endpoint call is
+      `GET {login-host}/oauth2/token?grant_type=refresh_token&refresh_token=…` (per
+      Questrade docs — no client id/secret for a personal app).
+  * Token flows: refresh-token paste field (`<input type=password>`, **not**
+    `sanitize_text_field` — trimmed only, tokens are opaque) → `admin_post_mm_save_refresh_token`;
+    "Forget stored token" → `admin_post_mm_clear_token`; masked recovery history;
+    "Test connection" → `wp_ajax_mm_test_connection` (nonce `mm_test_connection`).
+    `assets/admin.js` (vanilla `fetch`, no jQuery) + `wp_localize_script( 'mmAdmin', … )`.
+    `uninstall.php` deletes `mm_token_bundle` + `mm_token_lock`.
+  * **M1e — done, not yet committed:** `includes/class-mm-admin.php` (`MM_Admin` singleton,
+    registered last in `mm_bootstrap`). Own **top-level** menu "Money Maker"
+    (`dashicons-chart-area`, pos 58) at `admin.php?page=money-maker`, no longer under
+    Settings. Three screens as tabs:
+    * **Dashboard** (`money-maker`) — status hero (connected / env-mismatch / not-connected),
+      an ordered "Finish setup" checklist while incomplete, the "Test connection" button,
+      and a 4-card grid (Connection / Encryption / Environment / Data-sync-M2 preview).
+    * **Connection** (`mm-connection`) — token status + API-server host + obtained-age,
+      connect/re-connect form, recovery history, "Danger zone" forget-token.
+    * **Settings** (`mm-settings`) — environment radio cards, encryption-key status +
+      generate/rotate.
+    Shared chrome (`open()`/`close()`): brand bar, env badge, tab nav, `<hr class="wp-header-end">`,
+    flash notices. `assets/admin.css` fully rewritten — card layout scoped to `.mm-app`,
+    green accent, uses `:has()` for the checked-radio card. `MM_Settings` no longer renders
+    or registers a menu; `MM_Admin` owns `enqueue_assets` (scoped to its 3 page hooks),
+    `ajax_test_connection`, `page_url()`, `redirect_with_notices()`, `render_notices()`.
+  * **Admin notices:** do NOT use core's `settings_errors` transient + `settings-updated`
+    query arg — it renders every notice twice. Handlers call `add_settings_error()` then
+    `MM_Admin::redirect_with_notices( $slug )` stashes `get_settings_errors()` into a
+    private `mm_admin_notices` transient; `MM_Admin::render_notices()` prints and clears it
+    inside the page chrome. No `settings_errors()` call anywhere.
+* Options in use: `mm_settings` = `{ environment }`; `mm_token_bundle` (encrypted bundle,
+  autoload no); `mm_token_lock` (refresh lock, autoload no).
+* Out-of-DB files: `WP_CONTENT_DIR/mm-crypto-key.php` (key file, gitignored, `chmod 0600`,
+  written from the Settings screen).
+* Plugin files: `money-maker.php` + `includes/class-mm-{crypto,lock,token-store,
+  questrade-client,settings,admin}.php` + `assets/{admin.css,admin.js}` + `uninstall.php`.
+* M1a–M1d manually tested and working. M1e (UI reorg) is code-only so far — needs a visual
+  pass in wp-admin.
+* No dependencies, no Composer/npm, no CI, no tests (manual testing only — see §7).
