@@ -211,17 +211,16 @@ Follow these on every change so future sessions stay consistent.
 
 ## 9. Current Status
 _Last updated: 2026-09-07 — keep this section current._
-* On branch `milestone-1-auth`. **Milestone 1 code-complete (M1a–M1e); M1a–M1d manually
-  tested and confirmed working (incl. against a real Questrade practice account). M1e
-  (admin UI reorg) pending a manual look, then squash-merge PR and move to Milestone 2.**
+* **Milestone 1 COMPLETE and merged to `main`.** PR #1 squash-merged as `daa3deb`,
+  branch `milestone-1-auth` deleted, tagged `v0.1.0`. All of M1a–M1e manually tested and
+  confirmed working (incl. against a real Questrade practice account). Next work starts
+  from `main` on a new `milestone-2-sync` branch.
   * **M1a — done, committed (`786be75`), manually tested.** Bootstrap wiring in
     `money-maker.php` (`mm_bootstrap`, activation seeds `mm_settings`, deactivation
     releases lock); `includes/class-mm-settings.php` (`MM_Settings` singleton — options
     page under Settings, practice/live radio, `admin_post_mm_save_settings`);
-    `assets/admin.css`; `uninstall.php`. Branch not yet pushed — whole milestone lands
-    in one PR.
-  * **M1b — done, committed (`c79734d`), manually tested.** Branch still not pushed —
-    whole milestone lands in one PR. `includes/class-mm-crypto.php` (`MM_Crypto` — stateless static utility, no
+    `assets/admin.css`; `uninstall.php`.
+  * **M1b — done, committed (`c79734d`), manually tested.** `includes/class-mm-crypto.php` (`MM_Crypto` — stateless static utility, no
     hooks/`register()`; `sodium_crypto_secretbox` encrypt/decrypt with `mmc1:` base64
     payload prefix; key resolution `MM_CRYPTO_KEY` constant →
     `WP_CONTENT_DIR/mm-crypto-key.php` → none; `generate_key()` writes the file
@@ -264,7 +263,7 @@ _Last updated: 2026-09-07 — keep this section current._
     "Test connection" → `wp_ajax_mm_test_connection` (nonce `mm_test_connection`).
     `assets/admin.js` (vanilla `fetch`, no jQuery) + `wp_localize_script( 'mmAdmin', … )`.
     `uninstall.php` deletes `mm_token_bundle` + `mm_token_lock`.
-  * **M1e — done, not yet committed:** `includes/class-mm-admin.php` (`MM_Admin` singleton,
+  * **M1e — done, committed (`ed11c39`), manually tested.** `includes/class-mm-admin.php` (`MM_Admin` singleton,
     registered last in `mm_bootstrap`). Own **top-level** menu "Money Maker"
     (`dashicons-chart-area`, pos 58) at `admin.php?page=money-maker`, no longer under
     Settings. Three screens as tabs:
