@@ -25,6 +25,9 @@ define( 'MM_PLUGIN_BASENAME', plugin_basename( __FILE__ ) );
 define( 'MM_INCLUDES_DIR', MM_PLUGIN_DIR . 'includes/' );
 
 require_once MM_INCLUDES_DIR . 'class-mm-crypto.php';
+require_once MM_INCLUDES_DIR . 'class-mm-lock.php';
+require_once MM_INCLUDES_DIR . 'class-mm-token-store.php';
+require_once MM_INCLUDES_DIR . 'class-mm-questrade-client.php';
 require_once MM_INCLUDES_DIR . 'class-mm-settings.php';
 
 /**
@@ -52,7 +55,7 @@ register_activation_hook( __FILE__, 'mm_activate' );
 
 /**
  * Deactivation: release any held token-refresh lock so a later reactivation
- * starts clean. (The lock class arrives in M1c; guard until then.)
+ * starts clean.
  */
 function mm_deactivate() {
 	if ( class_exists( 'MM_Lock' ) ) {

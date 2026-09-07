@@ -3,7 +3,9 @@
  * Settings page for the Questrade Tracker & Tax Assistant.
  *
  * Milestone 1a: options page shell + practice/live environment toggle.
- * Later sub-steps extend render() and add more admin-post / AJAX handlers.
+ * Milestone 1b: encryption-key status + generate/rotate control.
+ * Milestone 1c: refresh-token paste field, token status, recovery history.
+ * Milestone 1d: "Test connection" button (AJAX GET v1/time).
  *
  * @package MoneyMaker
  */
@@ -21,6 +23,9 @@ final class MM_Settings {
 	const ENVIRONMENTS = array( 'practice', 'live' );
 	const SAVE_ACTION  = 'mm_save_settings';
 	const KEY_ACTION   = 'mm_manage_crypto_key';
+	const TOKEN_ACTION = 'mm_save_refresh_token';
+	const CLEAR_ACTION = 'mm_clear_token';
+	const TEST_ACTION  = 'mm_test_connection';
 
 	/**
 	 * Singleton instance.
@@ -49,6 +54,9 @@ final class MM_Settings {
 		add_action( 'admin_menu', array( $this, 'add_menu' ) );
 		add_action( 'admin_post_' . self::SAVE_ACTION, array( $this, 'handle_save_settings' ) );
 		add_action( 'admin_post_' . self::KEY_ACTION, array( $this, 'handle_manage_key' ) );
+		add_action( 'admin_post_' . self::TOKEN_ACTION, array( $this, 'handle_save_refresh_token' ) );
+		add_action( 'admin_post_' . self::CLEAR_ACTION, array( $this, 'handle_clear_token' ) );
+		add_action( 'wp_ajax_' . self::TEST_ACTION, array( $this, 'ajax_test_connection' ) );
 		add_action( 'admin_enqueue_scripts', array( $this, 'enqueue_assets' ) );
 	}
 
@@ -80,6 +88,28 @@ final class MM_Settings {
 			MM_PLUGIN_URL . 'assets/admin.css',
 			array(),
 			MM_VERSION
+		);
+
+		wp_enqueue_script(
+			'mm-admin',
+			MM_PLUGIN_URL . 'assets/admin.js',
+			array(),
+			MM_VERSION,
+			true
+		);
+
+		wp_localize_script(
+			'mm-admin',
+			'mmAdmin',
+			array(
+				'ajaxUrl'  => admin_url( 'admin-ajax.php' ),
+				'testAction' => self::TEST_ACTION,
+				'nonce'    => wp_create_nonce( self::TEST_ACTION ),
+				'strings'  => array(
+					'testing'  => __( 'Testing…', 'money-maker' ),
+					'failed'   => __( 'Test failed.', 'money-maker' ),
+				),
+			)
 		);
 	}
 
@@ -121,6 +151,7 @@ final class MM_Settings {
 			<?php
 			$this->render_environment_section();
 			$this->render_encryption_section();
+			$this->render_connection_section();
 			?>
 		</div>
 		<?php
@@ -262,6 +293,177 @@ final class MM_Settings {
 	}
 
 	/**
+	 * Questrade connection: token status, refresh-token paste field, recovery
+	 * history, and the "Test connection" button.
+	 */
+	private function render_connection_section(): void {
+		$environment = $this->get_settings()['environment'];
+		$crypto_ok   = MM_Crypto::is_configured();
+		$bundle      = MM_Token_Store::get();
+		?>
+		<h2 class="title"><?php esc_html_e( 'Questrade connection', 'money-maker' ); ?></h2>
+		<p class="description">
+			<?php esc_html_e( 'Questrade issues a one-time-use refresh token from its app hub. Paste it below; the plugin exchanges it for an access token and immediately stores the new refresh token in its place.', 'money-maker' ); ?>
+		</p>
+
+		<?php if ( ! $crypto_ok ) : ?>
+			<div class="notice notice-warning inline"><p>
+				<?php esc_html_e( 'Generate an encryption key above before entering a refresh token.', 'money-maker' ); ?>
+			</p></div>
+		<?php endif; ?>
+
+		<table class="form-table" role="presentation">
+			<tbody>
+				<tr>
+					<th scope="row"><?php esc_html_e( 'Status', 'money-maker' ); ?></th>
+					<td><?php $this->render_token_status( $bundle, $environment ); ?></td>
+				</tr>
+			</tbody>
+		</table>
+
+		<form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>">
+			<input type="hidden" name="action" value="<?php echo esc_attr( self::TOKEN_ACTION ); ?>" />
+			<?php wp_nonce_field( self::TOKEN_ACTION ); ?>
+			<table class="form-table" role="presentation">
+				<tbody>
+					<tr>
+						<th scope="row">
+							<label for="mm_refresh_token"><?php esc_html_e( 'New refresh token', 'money-maker' ); ?></label>
+						</th>
+						<td>
+							<input type="password" id="mm_refresh_token" name="mm_refresh_token"
+								class="regular-text" autocomplete="off" spellcheck="false"
+								<?php disabled( ! $crypto_ok ); ?> />
+							<p class="description">
+								<?php
+								printf(
+									/* translators: %s: environment name */
+									esc_html__( 'This will be exchanged against the %s environment.', 'money-maker' ),
+									'<strong>' . esc_html( $environment ) . '</strong>'
+								);
+								?>
+							</p>
+						</td>
+					</tr>
+				</tbody>
+			</table>
+			<?php submit_button( __( 'Connect to Questrade', 'money-maker' ), 'primary', 'submit', true, $crypto_ok ? array() : array( 'disabled' => 'disabled' ) ); ?>
+		</form>
+
+		<?php if ( null !== $bundle ) : ?>
+			<p>
+				<button type="button" class="button button-secondary" id="mm-test-connection">
+					<?php esc_html_e( 'Test connection', 'money-maker' ); ?>
+				</button>
+				<span id="mm-test-result" class="mm-test-result" role="status" aria-live="polite"></span>
+			</p>
+
+			<form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>"
+				onsubmit="return window.confirm( '<?php echo esc_js( __( 'Forget the stored Questrade token? You will need to paste a fresh refresh token to reconnect.', 'money-maker' ) ); ?>' );">
+				<input type="hidden" name="action" value="<?php echo esc_attr( self::CLEAR_ACTION ); ?>" />
+				<?php wp_nonce_field( self::CLEAR_ACTION ); ?>
+				<?php submit_button( __( 'Forget stored token', 'money-maker' ), 'link-delete', 'submit', false ); ?>
+			</form>
+
+			<?php $this->render_refresh_history(); ?>
+		<?php endif; ?>
+		<?php
+	}
+
+	/**
+	 * One-line token status plus access-token expiry.
+	 *
+	 * @param array|null $bundle      Decrypted token bundle, or null.
+	 * @param string     $environment Configured environment.
+	 */
+	private function render_token_status( ?array $bundle, string $environment ): void {
+		if ( null === $bundle ) {
+			printf(
+				'<p><span class="mm-warning">%s</span></p>',
+				esc_html__( 'Not connected — no token stored.', 'money-maker' )
+			);
+			return;
+		}
+
+		if ( $bundle['environment'] !== $environment ) {
+			printf(
+				'<p><span class="mm-warning">%s</span></p>',
+				sprintf(
+					/* translators: 1: stored environment, 2: configured environment */
+					esc_html__( 'Stored token is for %1$s but this site is set to %2$s. Paste a fresh %2$s token.', 'money-maker' ),
+					esc_html( $bundle['environment'] ),
+					esc_html( $environment )
+				)
+			);
+			return;
+		}
+
+		$seconds_left = $bundle['expires_at'] - time();
+
+		if ( $seconds_left > 0 ) {
+			printf(
+				'<p><span class="mm-ok">%s</span> &mdash; %s</p>',
+				esc_html__( 'Connected', 'money-maker' ),
+				sprintf(
+					/* translators: %s: human time difference, e.g. "12 mins" */
+					esc_html__( 'access token valid for about %s.', 'money-maker' ),
+					esc_html( human_time_diff( time(), $bundle['expires_at'] ) )
+				)
+			);
+		} else {
+			printf(
+				'<p><span class="mm-ok">%s</span> &mdash; %s</p>',
+				esc_html__( 'Connected', 'money-maker' ),
+				esc_html__( 'access token expired — it will refresh on the next call.', 'money-maker' )
+			);
+		}
+
+		printf(
+			'<p class="description">%s</p>',
+			sprintf(
+				/* translators: %s: masked api server host */
+				esc_html__( 'API server: %s', 'money-maker' ),
+				esc_html( (string) wp_parse_url( $bundle['api_server'], PHP_URL_HOST ) )
+			)
+		);
+	}
+
+	/**
+	 * Masked recovery list of recent refresh tokens.
+	 */
+	private function render_refresh_history(): void {
+		$history = MM_Token_Store::refresh_history_for_display();
+
+		if ( empty( $history ) ) {
+			return;
+		}
+		?>
+		<h3><?php esc_html_e( 'Recent refresh tokens (recovery)', 'money-maker' ); ?></h3>
+		<p class="description">
+			<?php esc_html_e( 'Kept only so a broken token chain can be recovered by hand. Values are masked; the plugin cannot show them in full.', 'money-maker' ); ?>
+		</p>
+		<ul class="mm-token-history">
+			<?php foreach ( $history as $entry ) : ?>
+				<li>
+					<code><?php echo esc_html( $entry['masked'] ); ?></code>
+					<?php if ( $entry['stored_at'] ) : ?>
+						<span class="description">
+							<?php
+							printf(
+								/* translators: %s: human time difference */
+								esc_html__( 'stored %s ago', 'money-maker' ),
+								esc_html( human_time_diff( $entry['stored_at'], time() ) )
+							);
+							?>
+						</span>
+					<?php endif; ?>
+				</li>
+			<?php endforeach; ?>
+		</ul>
+		<?php
+	}
+
+	/**
 	 * Handle the environment form submission.
 	 */
 	public function handle_save_settings(): void {
@@ -342,6 +544,93 @@ final class MM_Settings {
 		}
 
 		$this->persist_notices_and_redirect();
+	}
+
+	/**
+	 * Handle the refresh-token paste form: exchange it and store the bundle.
+	 */
+	public function handle_save_refresh_token(): void {
+		if ( ! current_user_can( self::CAPABILITY ) ) {
+			wp_die( esc_html__( 'You do not have permission to do this.', 'money-maker' ) );
+		}
+
+		check_admin_referer( self::TOKEN_ACTION );
+
+		// Deliberately not sanitize_text_field(): a refresh token is opaque and
+		// must survive verbatim. Trim whitespace only.
+		$raw   = isset( $_POST['mm_refresh_token'] ) ? wp_unslash( $_POST['mm_refresh_token'] ) : '';
+		$token = is_string( $raw ) ? trim( $raw ) : '';
+
+		if ( '' === $token ) {
+			add_settings_error( 'mm_settings', 'mm_token_empty', __( 'Enter a refresh token first.', 'money-maker' ), 'error' );
+			$this->persist_notices_and_redirect();
+		}
+
+		$environment = $this->get_settings()['environment'];
+		$result      = MM_Questrade_Client::exchange_refresh_token( $token, $environment );
+
+		if ( is_wp_error( $result ) ) {
+			add_settings_error( 'mm_settings', $result->get_error_code(), $result->get_error_message(), 'error' );
+		} else {
+			add_settings_error(
+				'mm_settings',
+				'mm_token_connected',
+				__( 'Connected to Questrade. The refresh token has been exchanged and stored.', 'money-maker' ),
+				'updated'
+			);
+		}
+
+		$this->persist_notices_and_redirect();
+	}
+
+	/**
+	 * Handle "Forget stored token".
+	 */
+	public function handle_clear_token(): void {
+		if ( ! current_user_can( self::CAPABILITY ) ) {
+			wp_die( esc_html__( 'You do not have permission to do this.', 'money-maker' ) );
+		}
+
+		check_admin_referer( self::CLEAR_ACTION );
+
+		MM_Token_Store::clear();
+		MM_Lock::release();
+
+		add_settings_error(
+			'mm_settings',
+			'mm_token_cleared',
+			__( 'Stored Questrade token forgotten.', 'money-maker' ),
+			'updated'
+		);
+
+		$this->persist_notices_and_redirect();
+	}
+
+	/**
+	 * AJAX: "Test connection" — GET v1/time and report the server clock.
+	 */
+	public function ajax_test_connection(): void {
+		if ( ! current_user_can( self::CAPABILITY ) ) {
+			wp_send_json_error( array( 'message' => __( 'Permission denied.', 'money-maker' ) ), 403 );
+		}
+
+		check_ajax_referer( self::TEST_ACTION );
+
+		$result = MM_Questrade_Client::test_connection();
+
+		if ( is_wp_error( $result ) ) {
+			wp_send_json_error( array( 'message' => $result->get_error_message() ) );
+		}
+
+		wp_send_json_success(
+			array(
+				'message' => sprintf(
+					/* translators: %s: Questrade server time (ISO 8601) */
+					__( 'OK — Questrade server time: %s', 'money-maker' ),
+					$result['time']
+				),
+			)
+		);
 	}
 
 	/**

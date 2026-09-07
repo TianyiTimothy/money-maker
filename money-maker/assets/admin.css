@@ -20,3 +20,17 @@
 .mm-settings fieldset label {
 	line-height: 1.8;
 }
+
+.mm-settings .mm-test-result {
+	margin-left: 8px;
+	font-weight: 600;
+}
+
+.mm-settings .mm-token-history {
+	margin: 0.5em 0 1.5em;
+	list-style: disc inside;
+}
+
+.mm-settings .mm-token-history code {
+	margin-right: 6px;
+}

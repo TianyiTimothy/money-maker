@@ -129,11 +129,11 @@ Use `dbDelta()` for schema; store a `mm_db_version` option and migrate on upgrad
   * **M1b:** `MM_Crypto` (libsodium `secretbox`) + key-management UI. Key resolution:
     `MM_CRYPTO_KEY` constant → `WP_CONTENT_DIR/mm-crypto-key.php` (UI-written, gitignored,
     out of DB) → not configured. Generate / rotate from the settings page.
-  * **M1c:** `MM_Token_Store` (encrypted bundle option, rolling 5-token history),
+  * **M1c — done:** `MM_Token_Store` (encrypted bundle option, rolling 5-token history),
     `MM_Lock` (option-based `mm_token_lock` + stale takeover), refresh-token paste field,
     `MM_Questrade_Client::exchange_refresh_token()`.
-  * **M1d:** `get_valid_token()` (proactive refresh under lock), `request()` with 401/429
-    retry, "Test connection" button + AJAX (`GET v1/time`).
+  * **M1d — done:** `get_valid_token()` (proactive refresh under lock), `request()` with
+    401/429 retry, "Test connection" button + AJAX (`GET v1/time`).
 * **Milestone 2:** Custom tables + `dbDelta` migrations; scheduled + manual sync for
   accounts and activities with dedup; FX rate fetching.
 * **Milestone 3:** Frontend/admin dashboard — positions, pooled ACB, realized gains/losses,
@@ -203,29 +203,64 @@ Follow these on every change so future sessions stay consistent.
 
 ## 9. Current Status
 _Last updated: 2026-09-07 — keep this section current._
-* On branch `milestone-1-auth`. **Milestone 1 in progress.**
+* On branch `milestone-1-auth`. **Milestone 1 code-complete (M1a–M1d); pending manual
+  test of M1c/M1d against a real Questrade practice account, then squash-merge PR.**
   * **M1a — done, committed (`786be75`), manually tested.** Bootstrap wiring in
     `money-maker.php` (`mm_bootstrap`, activation seeds `mm_settings`, deactivation
     releases lock); `includes/class-mm-settings.php` (`MM_Settings` singleton — options
     page under Settings, practice/live radio, `admin_post_mm_save_settings`);
     `assets/admin.css`; `uninstall.php`. Branch not yet pushed — whole milestone lands
     in one PR.
-  * **M1b — done, not yet committed:** `includes/class-mm-crypto.php` (`MM_Crypto` —
-    stateless static utility, no hooks/`register()`; `sodium_crypto_secretbox`
-    encrypt/decrypt with `mmc1:` base64 payload prefix; key resolution
-    `MM_CRYPTO_KEY` constant → `WP_CONTENT_DIR/mm-crypto-key.php` → none; `generate_key()`
-    writes the file atomically via `wp_tempnam`+`rename`, `chmod 0600`, fires
-    `mm/crypto/key_generated`). `MM_Settings` gains an "Encryption key" section (status,
-    non-reversible key fingerprint, generate/rotate button → `admin_post_mm_manage_crypto_key`)
-    — render split into `render_environment_section()` / `render_encryption_section()`,
-    redirect logic extracted to `persist_notices_and_redirect()`. `uninstall.php` deletes
-    the key file. `.gitignore` ignores `mm-crypto-key.php`. Rotate uses an inline
-    `onsubmit` confirm attribute (not a `<script>` blob).
-  * M1c–M1d: not started.
-* Options in use so far: `mm_settings` = `{ environment: 'practice'|'live' }`.
+  * **M1b — done, committed (`c79734d`), manually tested.** Branch still not pushed —
+    whole milestone lands in one PR. `includes/class-mm-crypto.php` (`MM_Crypto` — stateless static utility, no
+    hooks/`register()`; `sodium_crypto_secretbox` encrypt/decrypt with `mmc1:` base64
+    payload prefix; key resolution `MM_CRYPTO_KEY` constant →
+    `WP_CONTENT_DIR/mm-crypto-key.php` → none; `generate_key()` writes the file
+    atomically via `wp_tempnam`+`rename`, `chmod 0600`, fires `mm/crypto/key_generated`).
+    `MM_Settings` gains an "Encryption key" section (status, non-reversible key
+    fingerprint, generate/rotate button → `admin_post_mm_manage_crypto_key`) — render
+    split into `render_environment_section()` / `render_encryption_section()`, redirect
+    logic extracted to `persist_notices_and_redirect()`. `uninstall.php` deletes the key
+    file. `.gitignore` ignores `mm-crypto-key.php`. Rotate uses an inline `onsubmit`
+    confirm attribute (not a `<script>` blob).
+  * **M1c + M1d — done, not yet committed:** three new static-utility classes, all
+    `require_once`d from `money-maker.php` (order: crypto → lock → token-store → client →
+    settings):
+    * `includes/class-mm-lock.php` (`MM_Lock`) — option-based advisory lock
+      (`mm_token_lock`, autoload no) around every refresh. `acquire($max_wait=12)`
+      spin-waits (250ms poll); `add_option` is the compare-and-set primitive; a lock
+      older than `STALE_SECONDS` (30) is taken over. Per-request owner UUID so
+      `release()` never deletes a lock another process took over. `release()` called
+      defensively on deactivation and "forget token".
+    * `includes/class-mm-token-store.php` (`MM_Token_Store`) — the whole token response
+      (`access_token`, `refresh_token`, `api_server` [untrailingslashit], `token_type`,
+      computed `expires_at` = now + expires_in − 60s skew margin, `obtained_at`,
+      `environment`) JSON-encoded → `MM_Crypto::encrypt` → option `mm_token_bundle`
+      (autoload no). Rolling `refresh_history` (last 5, newest first) inside the same
+      bundle. `store_from_response()` is the write path; UI only ever sees masked values
+      (`mask()` → last 4 chars). `environment()` used for practice/live mismatch checks.
+    * `includes/class-mm-questrade-client.php` (`MM_Questrade_Client`) — OAuth hosts per
+      env (`practicelogin` / `login`; `api_server` for data calls always from the
+      bundle). `exchange_refresh_token()` and `get_valid_token($force=false)` both run
+      under `MM_Lock` and re-read the bundle inside the lock (another process may have
+      just refreshed); new bundle is persisted *before* returning. Proactive refresh at
+      `PROACTIVE_REFRESH_MARGIN` (300s) before expiry. `request($method,$path,$args)`:
+      up to 3 attempts, 401 → one forced refresh + retry, 429 → sleep `Retry-After`
+      (capped 10s) + retry. `test_connection()` = `GET v1/time`. Token endpoint is
+      `POST {host}/oauth2/token` form body.
+  * `MM_Settings`: new "Questrade connection" section — token status (connected / expiry
+    via `human_time_diff` / env-mismatch / api-server host), refresh-token paste field
+    (`<input type=password>`, **not** `sanitize_text_field` — trimmed only, tokens are
+    opaque) → `admin_post_mm_save_refresh_token`, "Forget stored token" →
+    `admin_post_mm_clear_token`, masked recovery history, "Test connection" button →
+    `wp_ajax_mm_test_connection` (nonce `mm_test_connection`). New `assets/admin.js`
+    (vanilla, `fetch`, no jQuery) enqueued + `wp_localize_script( 'mmAdmin', … )` only on
+    this screen. `uninstall.php` deletes `mm_token_bundle` + `mm_token_lock`.
+* Options in use: `mm_settings` = `{ environment }`; `mm_token_bundle` (encrypted bundle,
+  autoload no); `mm_token_lock` (refresh lock, autoload no).
 * Out-of-DB files: `WP_CONTENT_DIR/mm-crypto-key.php` (key file, gitignored, `chmod 0600`,
   written by the settings page).
 * Local WordPress test install (SiteGround `wp-content/`) is present but the plugin is not
   yet symlinked into `wp-content/plugins/`. No `MM_CRYPTO_KEY` defined yet.
-* No Questrade refresh token has been entered/tested yet.
+* No Questrade refresh token has been entered/tested yet — M1c/M1d verified by code only.
 * No dependencies, no Composer/npm, no CI, no tests (manual testing only — see §7).

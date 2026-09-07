@@ -10,8 +10,10 @@
 
 defined( 'WP_UNINSTALL_PLUGIN' ) || exit;
 
-// Options (M1a: settings only; later sub-steps add token + lock options).
-delete_option( 'mm_settings' );
+// Options.
+delete_option( 'mm_settings' );       // M1a: environment toggle.
+delete_option( 'mm_token_bundle' );    // M1c: encrypted Questrade token bundle.
+delete_option( 'mm_token_lock' );      // M1c: token-refresh lock.
 
 // Transients used for admin notices.
 delete_transient( 'settings_errors' );
