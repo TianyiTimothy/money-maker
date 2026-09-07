@@ -175,7 +175,9 @@ Follow these on every change so future sessions stay consistent.
 **PHP / backend**
 * One class per file at `money-maker/includes/class-mm-{name}.php`; class names `MM_{Name}`.
   Classes are passive — they expose a `register()` (or similar) that adds their hooks, and
-  `money-maker.php` calls it. Do not add hooks from constructors.
+  `money-maker.php` calls it. Do not add hooks from constructors. Stateless static-only
+  utilities with no hooks (e.g. `MM_Crypto`) are `require_once`d directly and have no
+  `register()`.
 * PHP 8.0+. Type-hint parameters and returns where practical. `defined( 'ABSPATH' ) || exit;`
   at the top of every file.
 * Every DB read/write through `$wpdb->prepare()`. Options are `mm_*`; token/financial
@@ -202,13 +204,27 @@ Follow these on every change so future sessions stay consistent.
 ## 9. Current Status
 _Last updated: 2026-09-07 — keep this section current._
 * On branch `milestone-1-auth`. **Milestone 1 in progress.**
-  * **M1a — done (not yet committed/merged):** bootstrap wiring in `money-maker.php`
-    (`mm_bootstrap`, activation seeds `mm_settings`, deactivation releases lock);
-    `includes/class-mm-settings.php` (`MM_Settings` singleton — options page under
-    Settings, practice/live radio, `admin_post_mm_save_settings`); `assets/admin.css`;
-    `uninstall.php`.
-  * M1b–M1d: not started.
+  * **M1a — done, committed (`786be75`), manually tested.** Bootstrap wiring in
+    `money-maker.php` (`mm_bootstrap`, activation seeds `mm_settings`, deactivation
+    releases lock); `includes/class-mm-settings.php` (`MM_Settings` singleton — options
+    page under Settings, practice/live radio, `admin_post_mm_save_settings`);
+    `assets/admin.css`; `uninstall.php`. Branch not yet pushed — whole milestone lands
+    in one PR.
+  * **M1b — done, not yet committed:** `includes/class-mm-crypto.php` (`MM_Crypto` —
+    stateless static utility, no hooks/`register()`; `sodium_crypto_secretbox`
+    encrypt/decrypt with `mmc1:` base64 payload prefix; key resolution
+    `MM_CRYPTO_KEY` constant → `WP_CONTENT_DIR/mm-crypto-key.php` → none; `generate_key()`
+    writes the file atomically via `wp_tempnam`+`rename`, `chmod 0600`, fires
+    `mm/crypto/key_generated`). `MM_Settings` gains an "Encryption key" section (status,
+    non-reversible key fingerprint, generate/rotate button → `admin_post_mm_manage_crypto_key`)
+    — render split into `render_environment_section()` / `render_encryption_section()`,
+    redirect logic extracted to `persist_notices_and_redirect()`. `uninstall.php` deletes
+    the key file. `.gitignore` ignores `mm-crypto-key.php`. Rotate uses an inline
+    `onsubmit` confirm attribute (not a `<script>` blob).
+  * M1c–M1d: not started.
 * Options in use so far: `mm_settings` = `{ environment: 'practice'|'live' }`.
+* Out-of-DB files: `WP_CONTENT_DIR/mm-crypto-key.php` (key file, gitignored, `chmod 0600`,
+  written by the settings page).
 * Local WordPress test install (SiteGround `wp-content/`) is present but the plugin is not
   yet symlinked into `wp-content/plugins/`. No `MM_CRYPTO_KEY` defined yet.
 * No Questrade refresh token has been entered/tested yet.

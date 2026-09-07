@@ -24,6 +24,7 @@ define( 'MM_PLUGIN_URL', plugin_dir_url( __FILE__ ) );
 define( 'MM_PLUGIN_BASENAME', plugin_basename( __FILE__ ) );
 define( 'MM_INCLUDES_DIR', MM_PLUGIN_DIR . 'includes/' );
 
+require_once MM_INCLUDES_DIR . 'class-mm-crypto.php';
 require_once MM_INCLUDES_DIR . 'class-mm-settings.php';
 
 /**
