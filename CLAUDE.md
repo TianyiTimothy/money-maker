@@ -123,11 +123,26 @@ Use `dbDelta()` for schema; store a `mm_db_version` option and migrate on upgrad
 
 ### Milestones
 * **Milestone 1:** Settings page, auth flow (safe save/refresh with lock + encryption),
-  test-connection button, practice/live toggle.
+  test-connection button, practice/live toggle. Split into testable sub-steps:
+  * **M1a:** plugin skeleton (bootstrap wiring, activation/deactivation), settings page
+    shell, practice/live environment toggle persisted to `mm_settings`.
+  * **M1b:** `MM_Crypto` (libsodium `secretbox`) + key-management UI. Key resolution:
+    `MM_CRYPTO_KEY` constant → `WP_CONTENT_DIR/mm-crypto-key.php` (UI-written, gitignored,
+    out of DB) → not configured. Generate / rotate from the settings page.
+  * **M1c:** `MM_Token_Store` (encrypted bundle option, rolling 5-token history),
+    `MM_Lock` (option-based `mm_token_lock` + stale takeover), refresh-token paste field,
+    `MM_Questrade_Client::exchange_refresh_token()`.
+  * **M1d:** `get_valid_token()` (proactive refresh under lock), `request()` with 401/429
+    retry, "Test connection" button + AJAX (`GET v1/time`).
 * **Milestone 2:** Custom tables + `dbDelta` migrations; scheduled + manual sync for
   accounts and activities with dedup; FX rate fetching.
 * **Milestone 3:** Frontend/admin dashboard — positions, pooled ACB, realized gains/losses,
   superficial-loss warnings, historical charts.
+
+### Testing
+* **No automated test suite.** The user tests each sub-step manually in the local
+  WordPress install. Do not add PHPUnit, Composer, npm, or CI without asking first.
+* When finishing a sub-step, give the user a short manual test checklist.
 
 ### Git
 * Remote: `origin` → https://github.com/TianyiTimothy/money-maker (public). Branch `main`.
@@ -154,12 +169,47 @@ Use `dbDelta()` for schema; store a `mm_db_version` option and migrate on upgrad
   work. Mention the update in your reply. Don't rewrite wholesale or drop context without
   flagging it.
 
+### 8.1 Coding Conventions — Backend & Frontend
+Follow these on every change so future sessions stay consistent.
+
+**PHP / backend**
+* One class per file at `money-maker/includes/class-mm-{name}.php`; class names `MM_{Name}`.
+  Classes are passive — they expose a `register()` (or similar) that adds their hooks, and
+  `money-maker.php` calls it. Do not add hooks from constructors.
+* PHP 8.0+. Type-hint parameters and returns where practical. `defined( 'ABSPATH' ) || exit;`
+  at the top of every file.
+* Every DB read/write through `$wpdb->prepare()`. Options are `mm_*`; token/financial
+  options use `autoload = 'no'`. Custom hooks are namespaced `mm/*`.
+* Every admin-post / AJAX handler: `current_user_can( 'manage_options' )` **and** a nonce
+  (`check_admin_referer` / `check_ajax_referer`). No exceptions.
+* Sanitize on input (`sanitize_text_field`, `absint`, explicit whitelists like
+  `MM_Settings::ENVIRONMENTS`). Escape on output at the echo site (`esc_html`, `esc_attr`,
+  `esc_url`, `wp_kses_post`).
+* All user-facing strings via `__()` / `esc_html__()` / `esc_html_e()` with text domain
+  `money-maker`.
+* HTTP only via `wp_remote_*`. Surface failures as `WP_Error`; show them to the admin with
+  `add_settings_error` (persisted across redirects via the `settings_errors` transient).
+* **Never** echo or log a full token or account number — mask to the last 4 characters.
+
+**JS / CSS / frontend**
+* Enqueue with `wp_enqueue_script` / `wp_enqueue_style`, version `MM_VERSION`, and only on
+  this plugin's own admin screen (check the `$hook_suffix`).
+* Assets live in `money-maker/assets/`. Vanilla JS, no build step, no bundler. jQuery only
+  if a real need appears. No new JS/CSS dependencies without asking.
+* Pass server data to JS with `wp_localize_script` (nonces, ajax URL, strings) — no inline
+  `<script>` blobs.
+
 ## 9. Current Status
 _Last updated: 2026-09-07 — keep this section current._
-* Repo scaffolded and pushed to `origin/main`. No code yet beyond the plugin bootstrap
-  (`money-maker/money-maker.php`: header + `MM_*` path constants).
-* **Next up: Milestone 1**, not started. Begin on branch `milestone-1-auth`.
+* On branch `milestone-1-auth`. **Milestone 1 in progress.**
+  * **M1a — done (not yet committed/merged):** bootstrap wiring in `money-maker.php`
+    (`mm_bootstrap`, activation seeds `mm_settings`, deactivation releases lock);
+    `includes/class-mm-settings.php` (`MM_Settings` singleton — options page under
+    Settings, practice/live radio, `admin_post_mm_save_settings`); `assets/admin.css`;
+    `uninstall.php`.
+  * M1b–M1d: not started.
+* Options in use so far: `mm_settings` = `{ environment: 'practice'|'live' }`.
 * Local WordPress test install (SiteGround `wp-content/`) is present but the plugin is not
   yet symlinked into `wp-content/plugins/`. No `MM_CRYPTO_KEY` defined yet.
 * No Questrade refresh token has been entered/tested yet.
-* No dependencies, no Composer/npm, no CI, no tests yet.
+* No dependencies, no Composer/npm, no CI, no tests (manual testing only — see §7).

@@ -1,0 +1,17 @@
+<?php
+/**
+ * Uninstall cleanup for the Questrade Tracker & Tax Assistant.
+ *
+ * Runs only when the plugin is deleted from the WordPress admin. Removes every
+ * option, transient, and out-of-database file the plugin creates.
+ *
+ * @package MoneyMaker
+ */
+
+defined( 'WP_UNINSTALL_PLUGIN' ) || exit;
+
+// Options (M1a: settings only; later sub-steps add token + lock options).
+delete_option( 'mm_settings' );
+
+// Transients used for admin notices.
+delete_transient( 'settings_errors' );

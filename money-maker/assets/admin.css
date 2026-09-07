@@ -1,0 +1,13 @@
+/* Questrade Tracker & Tax Assistant - admin settings screen */
+
+.mm-settings h2.title {
+	margin-top: 2em;
+}
+
+.mm-settings .mm-warning {
+	color: #8a6d00;
+}
+
+.mm-settings fieldset label {
+	line-height: 1.8;
+}
