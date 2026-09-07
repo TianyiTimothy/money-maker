@@ -1,0 +1,15 @@
+# Normalize line endings: LF in the repo, regardless of contributor OS.
+* text=auto eol=lf
+
+# Binary assets — never diff or convert.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.woff binary
+*.woff2 binary
+
+# Keep these out of GitHub's language stats and release archives.
+LICENSE   linguist-vendored
+*.pot     linguist-generated

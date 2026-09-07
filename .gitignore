@@ -1,0 +1,40 @@
+# The shippable plugin is the money-maker/ subfolder. The repo root also holds
+# dev-only files (docs, build config, tests). A local WordPress test install may
+# sit in this folder for convenience and is never committed.
+wp-content/
+wp-admin/
+wp-includes/
+wp-config.php
+wp-config-*.php
+/index.php
+/wp-*.php
+/xmlrpc.php
+
+# Dependencies (matches root or money-maker/)
+vendor/
+node_modules/
+
+# Build output
+/build/
+/dist/
+*.zip
+
+# Secrets & local-only config — NEVER commit
+*.key
+*.pem
+.env
+.env.*
+mm-config.local.php
+secrets.php
+
+# Logs & debug
+*.log
+debug.log
+
+# OS / editor cruft
+.DS_Store
+Thumbs.db
+desktop.ini
+.idea/
+*.swp
+*~

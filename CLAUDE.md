@@ -1,0 +1,137 @@
+# Project Overview: Questrade Tracker & Tax Assistant (WordPress Plugin)
+
+## 1. Project Goal
+A custom WordPress plugin that integrates with the Questrade API. **Stage 1 is read-only.**
+Pull personal investment data (accounts, positions, activities), store it locally in custom
+WordPress tables, provide analytics, and assist with Canadian tax reporting (pooled ACB
+calculation, superficial-loss warnings).
+
+This is a personal, single-site plugin. It is **not** intended for the wordpress.org
+repository, but it should still follow WordPress coding and security standards.
+
+## 2. Naming & Conventions
+* **Repo layout:** the shippable plugin is the `money-maker/` subfolder; the repo root
+  holds dev-only files (this spec, license, build/test config). All plugin code paths
+  below are relative to `money-maker/`.
+* **Plugin slug / folder:** `money-maker`
+* **Display name:** "Questrade Tracker & Tax Assistant"
+* **Text domain:** `money-maker`
+* **Prefix everything:** functions `mm_`, classes `MM_`, DB tables `{$wpdb->prefix}mm_*`,
+  options `mm_*`, hooks `mm/*`.
+
+## 3. Tech Stack & Standards
+* **Environment:** WordPress plugin architecture.
+* **Language:** PHP 8.0+ (develop/test against 8.1–8.2), JavaScript, HTML/CSS.
+* **Minimum WordPress:** 6.2.
+* **Database:** Custom tables via `$wpdb`. DO NOT use Custom Post Types or post meta for
+  financial data — performance and query structure require real tables.
+* **Security:**
+  * All queries go through `$wpdb->prepare()`.
+  * Sanitize every input (`sanitize_text_field`, `absint`, etc.); escape every output
+    (`esc_html`, `esc_attr`, `esc_url`).
+  * Nonces on every form submission and AJAX request; capability checks (`manage_options`).
+  * Encrypt sensitive tokens at rest (see Module A).
+  * **Never log tokens or full account numbers.** Mask account numbers in the UI.
+
+## 4. Core Modules (Stage 1)
+
+### Module A: Auth & Token Management (CRITICAL)
+Questrade OAuth 2.0 uses a **rolling, one-time-use refresh token**. Every access-token
+request returns a *new* refresh token; the old one is immediately dead.
+
+**Rules:**
+1. **Concurrency lock.** Before any refresh, acquire a lock (MySQL `GET_LOCK()` or an
+   `mm_token_lock` option holding a timestamp with a stale-timeout fallback). Only one
+   process refreshes at a time; others wait and then re-read the stored token. Two
+   concurrent refreshes (cron + manual sync) will permanently break the token chain.
+2. **Persist the whole token response**, not just the tokens:
+   `access_token`, `refresh_token`, `api_server`, `token_type`, and a computed
+   `expires_at` (from `expires_in`, ~1800s). `api_server` is the host for all data calls
+   and changes over time — always read it from storage, never hardcode.
+3. **Save order.** Write and commit the new `refresh_token` *before* making any other API
+   call. Keep a rolling history of the last ~5 refresh tokens for manual recovery.
+4. **Proactive refresh** ~2–5 minutes before `expires_at`, not reactively on a 401.
+5. **Manual recovery path** in settings: a field to paste a fresh refresh token when the
+   chain breaks.
+6. **Encryption at rest.** WordPress has no crypto primitive. Use libsodium
+   (`sodium_crypto_secretbox`) with a key from a `wp-config.php` constant `MM_CRYPTO_KEY`
+   (not stored in the DB). Document that losing the key means re-authentication. Store the
+   token option with `autoload = 'no'`.
+7. **Practice environment.** Support Questrade's practice login
+   (`practicelogin.questrade.com`) via a settings toggle so development does not hit the
+   live account.
+
+### Module B: Data Sync Engine
+* **Scheduler.** WP-Cron only fires on site traffic and is unreliable for this. Bundle
+  Action Scheduler, or document a real system cron calling `wp-cron.php`. Provide a
+  "Sync now" button regardless.
+* **Target endpoints:** `/v1/accounts`, `/v1/accounts/{id}/positions`,
+  `/v1/accounts/{id}/activities`.
+* **Activities date window.** The endpoint caps each request at ~31 days. Backfills must
+  loop month-by-month; incremental syncs use an overlapping window (e.g. last 35 days).
+* **Idempotency.** Questrade activities have no stable ID. Build a deterministic dedup key
+  — hash of `account + settlementDate + action + symbol + quantity + price + netAmount +
+  currency` — and **upsert**, never blind-insert (sync windows overlap by design).
+* **Rate limits.** Respect Questrade's per-hour and per-second caps; on HTTP 429, back off
+  using `Retry-After`.
+* **Timezone.** Questrade timestamps are US Eastern. Normalize to UTC on store; keep
+  trade date and settlement date as `DATE`.
+* **Bank of Canada FX.** Fetch daily CAD/USD rates from the BoC Valet API, series
+  `FXUSDCAD` (single daily rate since 2017-01-03; earlier dates need a different series).
+  For weekends/holidays, use the most recent prior business day's rate.
+* **`mm_sync_log`.** Record every run: endpoint, date range, status, rows affected, error.
+
+### Module C: Canadian Tax Logic (Business Rules)
+* **Scope.** ACB and superficial-loss logic apply to **non-registered accounts only**.
+  Detect account type from `/v1/accounts` and exclude TFSA / RRSP / RESP / LIRA etc.
+* **ACB (Adjusted Cost Base).** Pooled **average cost per security** per CRA rules — not
+  FIFO, not per-lot. Commissions/fees increase ACB on a buy and reduce proceeds on a
+  sell. USD transactions convert to CAD at the transaction date's exchange rate.
+* **Superficial loss.** Flag a realized loss when the same (or identical) security was
+  bought within the **61-day window**: 30 days before the sale, the sale day, and 30 days
+  after — *and* substituted property is still held at the end of that window. The denied
+  loss is added pro-rata to the ACB of the remaining shares.
+  * Affiliated-person triggers (spouse, the user's own registered accounts) are **out of
+    automated scope**. Superficial-loss output is **warning-only** — always surface
+    "review with your accountant."
+* **Disclaimer.** The plugin assists with reporting; it does not file taxes. The user is
+  responsible for all filings.
+
+## 5. Data Model (custom tables, prefix `{$wpdb->prefix}mm_`)
+* `mm_accounts` — account number (masked for display), type, status, currency.
+* `mm_activities` — normalized transactions + dedup hash (unique), raw JSON, FX rate used.
+* `mm_positions_snapshots` — dated snapshots of open positions per account.
+* `mm_fx_rates` — date, pair, rate, source.
+* `mm_manual_adjustments` — user-entered ACB adjustments for corporate actions the API
+  does not represent (splits, mergers, return of capital, ETF reinvested/"phantom"
+  distributions).
+* `mm_sync_log` — sync run history.
+
+Use `dbDelta()` for schema; store a `mm_db_version` option and migrate on upgrade.
+
+## 6. Edge Cases & Known Limitations
+* Network failure mid-refresh — see Module A rules 1–3.
+* Clock skew between server and Questrade — refresh proactively, tolerate early expiry.
+* Corporate actions (splits, mergers, spin-offs, return of capital, reinvested
+  distributions) are not reliably in the activities feed → handled via
+  `mm_manual_adjustments`, not computed automatically.
+* Currency: positions and activities can be USD or CAD; every tax figure is stored in CAD.
+* Questrade "practice" and "live" have separate tokens — never mix them.
+* Large backfills can exceed rate limits and PHP execution time — chunk and queue.
+
+## 7. Development Workflow
+* **Milestone 1:** Settings page, auth flow (safe save/refresh with lock + encryption),
+  test-connection button, practice/live toggle.
+* **Milestone 2:** Custom tables + `dbDelta` migrations; scheduled + manual sync for
+  accounts and activities with dedup; FX rate fetching.
+* **Milestone 3:** Frontend/admin dashboard — positions, pooled ACB, realized gains/losses,
+  superficial-loss warnings, historical charts.
+
+## 8. Claude AI Persona Instructions
+* Act as a Senior WordPress Developer and FinTech Engineer.
+* Keep code modular: separate Auth, DB, Sync, Tax, and UI concerns into their own classes.
+* Always consider edge cases — especially network failures and concurrency during token
+  refresh.
+* When creating a **new** file, write it complete and state its path. When changing an
+  **existing** file, give targeted edits, not a full re-dump.
+* Do not add dependencies or build tooling without asking.
