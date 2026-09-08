@@ -49,6 +49,32 @@ define( 'MM_CRYPTO_KEY', 'a-long-random-string-you-generate-once' );
 
 Losing this key means you'll need to re-authenticate with Questrade.
 
+## Scheduled sync (WP-Cron)
+
+The plugin schedules an incremental sync (`twicedaily`) through WP-Cron. WP-Cron
+only fires when the site receives a request, so on a low-traffic personal site it
+can lag. Options:
+
+- **Rely on WP-Cron** — fine if you visit the site regularly. A "Sync now" button
+  on the *Money Maker → Data Sync* screen always works on demand.
+- **Use a real system cron** (recommended for unattended syncing). Disable
+  WP-Cron's request-time trigger in `wp-config.php`:
+
+  ```php
+  define( 'DISABLE_WP_CRON', true );
+  ```
+
+  then run WP-Cron from the OS scheduler, e.g. every 15 minutes:
+
+  ```cron
+  */15 * * * * cd /path/to/wordpress && wp cron event run --due-now > /dev/null 2>&1
+  ```
+
+  (or `curl -s https://example.com/wp-cron.php?doing_wp_cron > /dev/null`).
+
+Historical data is loaded separately via **Data Sync → Historical backfill**, which
+walks activities month-by-month in small background steps.
+
 ## Security notes
 
 - No credentials, tokens, or account data are stored in this repository.
