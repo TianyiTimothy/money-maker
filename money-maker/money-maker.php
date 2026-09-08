@@ -3,7 +3,7 @@
  * Plugin Name:       Questrade Tracker & Tax Assistant
  * Plugin URI:        https://github.com/TianyiTimothy/money-maker
  * Description:        Pulls personal Questrade investment data into WordPress and assists with Canadian tax reporting (ACB, superficial-loss warnings). Stage 1: read-only.
- * Version:           0.1.0
+ * Version:           0.2.0
  * Requires at least: 6.2
  * Requires PHP:      8.0
  * Author:            Timothy Zhang
@@ -17,7 +17,7 @@
 
 defined( 'ABSPATH' ) || exit;
 
-define( 'MM_VERSION', '0.1.0' );
+define( 'MM_VERSION', '0.2.0' );
 define( 'MM_PLUGIN_FILE', __FILE__ );
 define( 'MM_PLUGIN_DIR', plugin_dir_path( __FILE__ ) );
 define( 'MM_PLUGIN_URL', plugin_dir_url( __FILE__ ) );
