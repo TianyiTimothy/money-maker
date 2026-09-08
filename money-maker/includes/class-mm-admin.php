@@ -31,9 +31,12 @@ final class MM_Admin {
 	const MENU_SLUG = 'money-maker';
 
 	/** Subpage slugs. */
-	const CONNECTION_SLUG = 'mm-connection';
-	const SYNC_SLUG       = 'mm-sync';
-	const SETTINGS_SLUG   = 'mm-settings';
+	const HOLDINGS_SLUG    = 'mm-holdings';
+	const GAINS_SLUG       = 'mm-gains';
+	const ADJUSTMENTS_SLUG = 'mm-adjustments';
+	const CONNECTION_SLUG  = 'mm-connection';
+	const SYNC_SLUG        = 'mm-sync';
+	const SETTINGS_SLUG    = 'mm-settings';
 
 	/** AJAX action for the "Test connection" button. */
 	const TEST_ACTION = 'mm_test_connection';
@@ -102,6 +105,33 @@ final class MM_Admin {
 			array( $this, 'render_dashboard' )
 		);
 
+		$this->hooks['holdings'] = (string) add_submenu_page(
+			self::MENU_SLUG,
+			__( 'Holdings', 'money-maker' ),
+			__( 'Holdings', 'money-maker' ),
+			self::CAPABILITY,
+			self::HOLDINGS_SLUG,
+			array( $this, 'render_holdings' )
+		);
+
+		$this->hooks['gains'] = (string) add_submenu_page(
+			self::MENU_SLUG,
+			__( 'Realized Gains', 'money-maker' ),
+			__( 'Realized Gains', 'money-maker' ),
+			self::CAPABILITY,
+			self::GAINS_SLUG,
+			array( $this, 'render_gains' )
+		);
+
+		$this->hooks['adjustments'] = (string) add_submenu_page(
+			self::MENU_SLUG,
+			__( 'ACB Adjustments', 'money-maker' ),
+			__( 'Adjustments', 'money-maker' ),
+			self::CAPABILITY,
+			self::ADJUSTMENTS_SLUG,
+			array( $this, 'render_adjustments' )
+		);
+
 		$this->hooks['connection'] = (string) add_submenu_page(
 			self::MENU_SLUG,
 			__( 'Questrade Connection', 'money-maker' ),
@@ -168,6 +198,59 @@ final class MM_Admin {
 				),
 			)
 		);
+
+		// Charts (M3e) — only on the two screens that draw them.
+		if ( in_array( $hook_suffix, array( $this->hooks['holdings'] ?? '', $this->hooks['gains'] ?? '' ), true ) ) {
+			wp_enqueue_script(
+				'mm-charts',
+				MM_PLUGIN_URL . 'assets/mm-charts.js',
+				array(),
+				MM_VERSION,
+				true
+			);
+			wp_localize_script( 'mm-charts', 'mmCharts', $this->chart_data( $hook_suffix ) );
+		}
+	}
+
+	/**
+	 * Localized chart payload for the current screen. See assets/mm-charts.js.
+	 *
+	 * @param string $hook_suffix Current admin page hook.
+	 * @return array<string,mixed>
+	 */
+	private function chart_data( string $hook_suffix ): array {
+		if ( ( $this->hooks['holdings'] ?? '' ) === $hook_suffix ) {
+			$points = array();
+			foreach ( MM_Positions::value_series() as $date => $total ) {
+				$points[] = array( 'x' => $date, 'y' => round( (float) $total, 2 ) );
+			}
+
+			return array(
+				'portfolioValue' => array(
+					'type'   => 'line',
+					'unit'   => '$',
+					'points' => $points,
+				),
+			);
+		}
+
+		if ( ( $this->hooks['gains'] ?? '' ) === $hook_suffix ) {
+			$acb  = MM_Tax_ACB::get( MM_Accounts::non_registered_numbers() );
+			$bars = array();
+			foreach ( MM_Tax_ACB::realized_by_year( $acb ) as $year => $total ) {
+				$bars[] = array( 'label' => (string) $year, 'value' => round( (float) $total, 2 ) );
+			}
+
+			return array(
+				'realizedPnl' => array(
+					'type' => 'bar',
+					'unit' => '$',
+					'bars' => $bars,
+				),
+			);
+		}
+
+		return array();
 	}
 
 	/* ---------------------------------------------------------------------
@@ -210,9 +293,90 @@ final class MM_Admin {
 		$this->render_encryption_card();
 		$this->render_environment_card( $environment );
 		$this->render_sync_card();
+		if ( MM_DB::is_installed() && MM_Accounts::count() > 0 ) {
+			$this->render_holdings_card();
+			$this->render_tax_card();
+		}
 		echo '</div>';
 
 		$this->close();
+	}
+
+	/**
+	 * Dashboard card: portfolio market value + unrealised gain/loss.
+	 */
+	private function render_holdings_card(): void {
+		$model  = MM_Holdings::current();
+		$totals = $model['totals'];
+		?>
+		<div class="mm-card mm-card--link">
+			<div class="mm-card__head">
+				<h3><?php esc_html_e( 'Holdings', 'money-maker' ); ?></h3>
+				<?php if ( $model['has_data'] ) : ?>
+					<span class="mm-pill mm-pill--muted"><?php echo esc_html( self::fmt_cad( (float) $totals['market'] ) ); ?> CAD</span>
+				<?php else : ?>
+					<span class="mm-pill mm-pill--warn"><?php esc_html_e( 'No snapshot', 'money-maker' ); ?></span>
+				<?php endif; ?>
+			</div>
+			<p class="mm-muted">
+				<?php
+				if ( $model['has_data'] ) {
+					printf(
+						/* translators: %s: unrealised gain/loss */
+						esc_html__( 'Unrealised gain/loss %s CAD across non-registered accounts.', 'money-maker' ),
+						esc_html( self::fmt_cad( (float) $totals['unrealised'] ) )
+					);
+				} else {
+					esc_html_e( 'Run a positions sync to see current holdings and unrealised gains.', 'money-maker' );
+				}
+				?>
+			</p>
+			<a href="<?php echo esc_url( self::page_url( self::HOLDINGS_SLUG ) ); ?>"><?php esc_html_e( 'Open Holdings →', 'money-maker' ); ?></a>
+		</div>
+		<?php
+	}
+
+	/**
+	 * Dashboard card: realized gains this year + review-item count.
+	 */
+	private function render_tax_card(): void {
+		$accounts = MM_Accounts::non_registered_numbers();
+		$acb      = empty( $accounts ) ? MM_Tax_ACB::compute( array() ) : MM_Tax_ACB::get( $accounts );
+		$year     = (int) gmdate( 'Y' );
+		$by_year  = MM_Tax_ACB::realized_by_year( $acb );
+		$this_year = $by_year[ $year ] ?? 0.0;
+		$reviews   = count( $acb['reviews'] );
+		?>
+		<div class="mm-card mm-card--link">
+			<div class="mm-card__head">
+				<h3><?php esc_html_e( 'Taxes', 'money-maker' ); ?></h3>
+				<?php if ( $reviews > 0 ) : ?>
+					<span class="mm-pill mm-pill--warn">
+						<?php
+						printf(
+							/* translators: %d: number of items */
+							esc_html( _n( '%d to review', '%d to review', $reviews, 'money-maker' ) ),
+							(int) $reviews
+						);
+						?>
+					</span>
+				<?php else : ?>
+					<span class="mm-pill mm-pill--ok"><?php esc_html_e( 'Clear', 'money-maker' ); ?></span>
+				<?php endif; ?>
+			</div>
+			<p class="mm-muted">
+				<?php
+				printf(
+					/* translators: 1: year, 2: amount */
+					esc_html__( '%1$d realized gain/loss so far: %2$s CAD (pooled ACB).', 'money-maker' ),
+					(int) $year,
+					esc_html( self::fmt_cad( (float) $this_year ) )
+				);
+				?>
+			</p>
+			<a href="<?php echo esc_url( self::page_url( self::GAINS_SLUG ) ); ?>"><?php esc_html_e( 'Open Realized Gains →', 'money-maker' ); ?></a>
+		</div>
+		<?php
 	}
 
 	/**
@@ -563,6 +727,617 @@ final class MM_Admin {
 			<?php endif; ?>
 		</div>
 		<?php
+	}
+
+	/* ---------------------------------------------------------------------
+	 * Milestone 3 — Holdings / Realized Gains / Adjustments
+	 * ------------------------------------------------------------------- */
+
+	/**
+	 * Holdings screen: current positions + pooled ACB + unrealised gain/loss,
+	 * per account and consolidated, plus the portfolio-value chart.
+	 */
+	public function render_holdings(): void {
+		$this->guard();
+		$this->open( 'holdings' );
+
+		if ( $this->require_tables() ) {
+			$this->close();
+			return;
+		}
+
+		$model = MM_Holdings::current();
+
+		if ( ! $model['has_data'] ) {
+			?>
+			<div class="mm-card">
+				<h2><?php esc_html_e( 'No positions yet', 'money-maker' ); ?></h2>
+				<p class="mm-muted">
+					<?php esc_html_e( 'Run a positions sync to pull your open holdings from Questrade.', 'money-maker' ); ?>
+				</p>
+				<a class="button button-primary" href="<?php echo esc_url( self::page_url( self::SYNC_SLUG ) ); ?>">
+					<?php esc_html_e( 'Go to Data Sync', 'money-maker' ); ?>
+				</a>
+			</div>
+			<?php
+			$this->close();
+			return;
+		}
+		?>
+		<div class="mm-card">
+			<div class="mm-card__head">
+				<h2><?php esc_html_e( 'Portfolio value', 'money-maker' ); ?></h2>
+				<?php if ( $model['as_of'] ) : ?>
+					<span class="mm-pill mm-pill--muted">
+						<?php
+						printf(
+							/* translators: %s: snapshot date */
+							esc_html__( 'as of %s', 'money-maker' ),
+							esc_html( (string) $model['as_of'] )
+						);
+						?>
+					</span>
+				<?php endif; ?>
+			</div>
+			<div class="mm-chart" data-mm-chart="portfolioValue"
+				data-mm-empty="<?php esc_attr_e( 'Portfolio history appears once at least two positions snapshots exist.', 'money-maker' ); ?>">
+			</div>
+			<p class="mm-muted"><?php esc_html_e( 'Market value as reported by Questrade, summed across accounts (not FX-normalised).', 'money-maker' ); ?></p>
+		</div>
+
+		<?php foreach ( $model['accounts'] as $account ) : ?>
+			<div class="mm-card">
+				<div class="mm-card__head">
+					<h2><?php echo esc_html( $account['label'] ); ?></h2>
+					<span class="mm-pill mm-pill--<?php echo $account['registered'] ? 'muted' : 'ok'; ?>">
+						<?php echo esc_html( $account['registered'] ? __( 'Registered', 'money-maker' ) : __( 'Non-registered', 'money-maker' ) ); ?>
+					</span>
+				</div>
+				<?php $this->render_holdings_table( $account['lines'], $account['subtotal'], $account['registered'] ); ?>
+			</div>
+		<?php endforeach; ?>
+
+		<?php if ( count( $model['accounts'] ) > 1 ) : ?>
+			<div class="mm-card">
+				<h2><?php esc_html_e( 'Consolidated', 'money-maker' ); ?></h2>
+				<?php
+				$this->render_holdings_table(
+					$model['consolidated'],
+					array(
+						'book'       => $model['totals']['book'],
+						'market'     => $model['totals']['market'],
+						'unrealised' => $model['totals']['unrealised'],
+					),
+					false
+				);
+				?>
+			</div>
+		<?php endif; ?>
+
+		<?php
+		$this->render_tax_disclaimer();
+		$this->close();
+	}
+
+	/**
+	 * One holdings table (per-account or consolidated).
+	 *
+	 * @param array<int,array<string,mixed>> $lines
+	 * @param array{book:float,market:float,unrealised:float} $subtotal
+	 * @param bool $registered Whether to hide the ACB columns.
+	 */
+	private function render_holdings_table( array $lines, array $subtotal, bool $registered ): void {
+		?>
+		<table class="widefat striped mm-table">
+			<thead>
+				<tr>
+					<th><?php esc_html_e( 'Symbol', 'money-maker' ); ?></th>
+					<th class="mm-num"><?php esc_html_e( 'Quantity', 'money-maker' ); ?></th>
+					<?php if ( ! $registered ) : ?>
+						<th class="mm-num"><?php esc_html_e( 'Avg cost (CAD)', 'money-maker' ); ?></th>
+						<th class="mm-num"><?php esc_html_e( 'Book value (CAD)', 'money-maker' ); ?></th>
+					<?php endif; ?>
+					<th class="mm-num"><?php esc_html_e( 'Market value (CAD)', 'money-maker' ); ?></th>
+					<?php if ( ! $registered ) : ?>
+						<th class="mm-num"><?php esc_html_e( 'Unrealised', 'money-maker' ); ?></th>
+					<?php endif; ?>
+				</tr>
+			</thead>
+			<tbody>
+				<?php foreach ( $lines as $line ) : ?>
+					<tr>
+						<td>
+							<strong><?php echo esc_html( $line['symbol'] ); ?></strong>
+							<?php if ( 'CAD' !== ( $line['currency'] ?? 'CAD' ) ) : ?>
+								<span class="mm-pill mm-pill--muted"><?php echo esc_html( (string) $line['currency'] ); ?></span>
+							<?php endif; ?>
+						</td>
+						<td class="mm-num"><?php echo esc_html( self::fmt_qty( (float) $line['quantity'] ) ); ?></td>
+						<?php if ( ! $registered ) : ?>
+							<td class="mm-num"><?php echo esc_html( null === $line['avg_cost'] ? '—' : self::fmt_cad( (float) $line['avg_cost'] ) ); ?></td>
+							<td class="mm-num"><?php echo esc_html( null === $line['book_cad'] ? '—' : self::fmt_cad( (float) $line['book_cad'] ) ); ?></td>
+						<?php endif; ?>
+						<td class="mm-num"><?php echo esc_html( null === $line['market_cad'] ? '—' : self::fmt_cad( (float) $line['market_cad'] ) ); ?></td>
+						<?php if ( ! $registered ) : ?>
+							<td class="mm-num"><?php echo wp_kses_post( self::gain_cell( isset( $line['unrealised'] ) ? $line['unrealised'] : null, isset( $line['unrealised_pct'] ) ? $line['unrealised_pct'] : null ) ); ?></td>
+						<?php endif; ?>
+					</tr>
+				<?php endforeach; ?>
+			</tbody>
+			<tfoot>
+				<tr>
+					<th><?php esc_html_e( 'Total', 'money-maker' ); ?></th>
+					<td class="mm-num">—</td>
+					<?php if ( ! $registered ) : ?>
+						<td class="mm-num">—</td>
+						<td class="mm-num"><?php echo esc_html( self::fmt_cad( (float) $subtotal['book'] ) ); ?></td>
+					<?php endif; ?>
+					<td class="mm-num"><?php echo esc_html( self::fmt_cad( (float) $subtotal['market'] ) ); ?></td>
+					<?php if ( ! $registered ) : ?>
+						<td class="mm-num"><?php echo wp_kses_post( self::gain_cell( (float) $subtotal['unrealised'], null ) ); ?></td>
+					<?php endif; ?>
+				</tr>
+			</tfoot>
+		</table>
+		<?php
+	}
+
+	/**
+	 * Realized Gains screen: dispositions by tax year, realised-P&L chart,
+	 * review items, and superficial-loss warnings. Non-registered accounts only.
+	 */
+	public function render_gains(): void {
+		$this->guard();
+		$this->open( 'gains' );
+
+		if ( $this->require_tables() ) {
+			$this->close();
+			return;
+		}
+
+		$accounts = MM_Accounts::non_registered_numbers();
+
+		if ( empty( $accounts ) ) {
+			echo '<div class="mm-card"><p class="mm-muted">'
+				. esc_html__( 'No non-registered accounts are synced. ACB and realized-gain reporting only applies to Cash and Margin accounts.', 'money-maker' )
+				. '</p></div>';
+			$this->close();
+			return;
+		}
+
+		$acb   = MM_Tax_ACB::get( $accounts );
+		$years = MM_Tax_ACB::years( $acb );
+
+		$selected_year = isset( $_GET['year'] ) ? absint( wp_unslash( $_GET['year'] ) ) : ( $years[0] ?? (int) gmdate( 'Y' ) ); // phpcs:ignore WordPress.Security.NonceVerification.Recommended
+		if ( ! empty( $years ) && ! in_array( $selected_year, $years, true ) ) {
+			$selected_year = $years[0];
+		}
+
+		$this->render_tax_disclaimer();
+
+		if ( $acb['missing_cad'] > 0 ) {
+			echo '<div class="mm-inline-notice mm-inline-notice--warn">'
+				. esc_html(
+					sprintf(
+						/* translators: %d: row count */
+						_n(
+							'%d USD activity has no CAD conversion yet — its gain is understated until you run an FX sync.',
+							'%d USD activities have no CAD conversion yet — their gains are understated until you run an FX sync.',
+							$acb['missing_cad'],
+							'money-maker'
+						),
+						$acb['missing_cad']
+					)
+				)
+				. '</div>';
+		}
+
+		foreach ( $acb['warnings'] as $warning ) {
+			echo '<div class="mm-inline-notice mm-inline-notice--warn">' . esc_html( $warning ) . '</div>';
+		}
+
+		if ( empty( $years ) ) {
+			echo '<div class="mm-card"><p class="mm-muted">'
+				. esc_html__( 'No completed dispositions on record yet. Sell a position (or back-fill history) and it will show up here.', 'money-maker' )
+				. '</p></div>';
+			$this->render_reviews_card( $acb['reviews'] );
+			$this->close();
+			return;
+		}
+		?>
+		<div class="mm-card">
+			<div class="mm-card__head">
+				<h2><?php esc_html_e( 'Realized profit &amp; loss by year', 'money-maker' ); ?></h2>
+			</div>
+			<div class="mm-chart" data-mm-chart="realizedPnl"
+				data-mm-empty="<?php esc_attr_e( 'No realized gains or losses yet.', 'money-maker' ); ?>"></div>
+			<form method="get" class="mm-form mm-year-picker">
+				<input type="hidden" name="page" value="<?php echo esc_attr( self::GAINS_SLUG ); ?>" />
+				<label for="mm-year"><?php esc_html_e( 'Tax year', 'money-maker' ); ?></label>
+				<select id="mm-year" name="year" onchange="this.form.submit()">
+					<?php foreach ( $years as $year ) : ?>
+						<option value="<?php echo esc_attr( (string) $year ); ?>" <?php selected( $year, $selected_year ); ?>>
+							<?php echo esc_html( (string) $year ); ?>
+						</option>
+					<?php endforeach; ?>
+				</select>
+				<noscript><button type="submit" class="button"><?php esc_html_e( 'Show', 'money-maker' ); ?></button></noscript>
+			</form>
+		</div>
+
+		<?php
+		$rows  = MM_Tax_ACB::dispositions_for_year( $acb, $selected_year );
+		$total = 0.0;
+		foreach ( $rows as $r ) {
+			$total += (float) $r['gain'];
+		}
+		?>
+		<div class="mm-card">
+			<h2>
+				<?php
+				printf(
+					/* translators: %d: year */
+					esc_html__( 'Dispositions — %d', 'money-maker' ),
+					(int) $selected_year
+				);
+				?>
+			</h2>
+			<table class="widefat striped mm-table">
+				<thead>
+					<tr>
+						<th><?php esc_html_e( 'Settled', 'money-maker' ); ?></th>
+						<th><?php esc_html_e( 'Account', 'money-maker' ); ?></th>
+						<th><?php esc_html_e( 'Symbol', 'money-maker' ); ?></th>
+						<th class="mm-num"><?php esc_html_e( 'Quantity', 'money-maker' ); ?></th>
+						<th class="mm-num"><?php esc_html_e( 'Proceeds (CAD)', 'money-maker' ); ?></th>
+						<th class="mm-num"><?php esc_html_e( 'ACB (CAD)', 'money-maker' ); ?></th>
+						<th class="mm-num"><?php esc_html_e( 'Gain / loss (CAD)', 'money-maker' ); ?></th>
+					</tr>
+				</thead>
+				<tbody>
+					<?php if ( empty( $rows ) ) : ?>
+						<tr><td colspan="7" class="mm-muted"><?php esc_html_e( 'No dispositions settled in this year.', 'money-maker' ); ?></td></tr>
+					<?php else : ?>
+						<?php foreach ( $rows as $r ) : ?>
+							<tr>
+								<td><?php echo esc_html( (string) $r['date'] ); ?></td>
+								<td><?php echo esc_html( MM_Accounts::label( (string) $r['account_number'] ) ); ?></td>
+								<td>
+									<strong><?php echo esc_html( (string) $r['symbol'] ); ?></strong>
+									<?php if ( ! empty( $r['flags'] ) ) : ?>
+										<span class="mm-pill mm-pill--warn" title="<?php echo esc_attr( implode( ', ', $r['flags'] ) ); ?>"><?php esc_html_e( 'check', 'money-maker' ); ?></span>
+									<?php endif; ?>
+								</td>
+								<td class="mm-num"><?php echo esc_html( self::fmt_qty( (float) $r['quantity'] ) ); ?></td>
+								<td class="mm-num"><?php echo esc_html( self::fmt_cad( (float) $r['proceeds'] ) ); ?></td>
+								<td class="mm-num"><?php echo esc_html( self::fmt_cad( (float) $r['acb'] ) ); ?></td>
+								<td class="mm-num"><?php echo wp_kses_post( self::gain_cell( (float) $r['gain'], null ) ); ?></td>
+							</tr>
+						<?php endforeach; ?>
+					<?php endif; ?>
+				</tbody>
+				<tfoot>
+					<tr>
+						<th colspan="6"><?php esc_html_e( 'Net realized gain / loss', 'money-maker' ); ?></th>
+						<td class="mm-num"><?php echo wp_kses_post( self::gain_cell( round( $total, 2 ), null ) ); ?></td>
+					</tr>
+				</tfoot>
+			</table>
+			<p class="mm-muted"><?php esc_html_e( 'Pooled average-cost basis per CRA rules. Bucketed by settlement date. 50% inclusion rate is not applied here.', 'money-maker' ); ?></p>
+		</div>
+
+		<?php
+		$this->render_superficial_loss_card( MM_Tax_Superficial_Loss::analyze( $acb, $accounts ) );
+		$this->render_reviews_card( $acb['reviews'] );
+		$this->close();
+	}
+
+	/**
+	 * Superficial-loss warnings section.
+	 *
+	 * @param array<int,array<string,mixed>> $warnings
+	 */
+	private function render_superficial_loss_card( array $warnings ): void {
+		?>
+		<div class="mm-card">
+			<h2><?php esc_html_e( 'Superficial-loss warnings', 'money-maker' ); ?></h2>
+			<div class="mm-inline-notice mm-inline-notice--warn"><?php echo esc_html( MM_Tax_Superficial_Loss::disclaimer() ); ?></div>
+			<?php if ( empty( $warnings ) ) : ?>
+				<p class="mm-muted"><?php esc_html_e( 'No realized loss on record was followed by a repurchase inside the 61-day window.', 'money-maker' ); ?></p>
+			<?php else : ?>
+				<table class="widefat striped mm-table">
+					<thead>
+						<tr>
+							<th><?php esc_html_e( 'Sale', 'money-maker' ); ?></th>
+							<th><?php esc_html_e( 'Symbol', 'money-maker' ); ?></th>
+							<th class="mm-num"><?php esc_html_e( 'Loss (CAD)', 'money-maker' ); ?></th>
+							<th class="mm-num"><?php esc_html_e( 'Denied (CAD)', 'money-maker' ); ?></th>
+							<th class="mm-num"><?php esc_html_e( 'Allowed (CAD)', 'money-maker' ); ?></th>
+							<th class="mm-num"><?php esc_html_e( 'ACB add / share', 'money-maker' ); ?></th>
+							<th><?php esc_html_e( 'Window', 'money-maker' ); ?></th>
+						</tr>
+					</thead>
+					<tbody>
+						<?php foreach ( $warnings as $w ) : ?>
+							<tr>
+								<td><?php echo esc_html( (string) $w['sale_date'] ); ?></td>
+								<td><strong><?php echo esc_html( (string) $w['symbol'] ); ?></strong></td>
+								<td class="mm-num"><?php echo esc_html( self::fmt_cad( (float) $w['loss'] ) ); ?></td>
+								<td class="mm-num"><?php echo esc_html( self::fmt_cad( (float) $w['denied'] ) ); ?></td>
+								<td class="mm-num"><?php echo esc_html( self::fmt_cad( (float) $w['allowed'] ) ); ?></td>
+								<td class="mm-num"><?php echo esc_html( self::fmt_cad( (float) $w['acb_bump_per_share'] ) ); ?></td>
+								<td class="mm-muted"><?php echo esc_html( $w['window_start'] . ' → ' . $w['window_end'] ); ?></td>
+							</tr>
+						<?php endforeach; ?>
+					</tbody>
+				</table>
+				<p class="mm-muted"><?php esc_html_e( 'The denied loss is added, pro-rata, to the ACB of the shares still held at the end of the window. Amounts here are not folded into the tables above.', 'money-maker' ); ?></p>
+			<?php endif; ?>
+		</div>
+		<?php
+	}
+
+	/**
+	 * Activities the ACB engine could not classify automatically.
+	 *
+	 * @param array<int,array<string,mixed>> $reviews
+	 */
+	private function render_reviews_card( array $reviews ): void {
+		if ( empty( $reviews ) ) {
+			return;
+		}
+		?>
+		<div class="mm-card mm-card--danger">
+			<h2><?php esc_html_e( 'Needs your review', 'money-maker' ); ?></h2>
+			<p class="mm-muted">
+				<?php esc_html_e( 'These activities carry a share quantity but are not plain buys or sells (transfers-in, corporate actions, option assignments). The ACB engine leaves them alone — enter a matching adjustment on the Adjustments tab if they change your cost base.', 'money-maker' ); ?>
+			</p>
+			<table class="widefat striped mm-table">
+				<thead>
+					<tr>
+						<th><?php esc_html_e( 'Date', 'money-maker' ); ?></th>
+						<th><?php esc_html_e( 'Account', 'money-maker' ); ?></th>
+						<th><?php esc_html_e( 'Symbol', 'money-maker' ); ?></th>
+						<th><?php esc_html_e( 'What Questrade called it', 'money-maker' ); ?></th>
+					</tr>
+				</thead>
+				<tbody>
+					<?php foreach ( $reviews as $rev ) : ?>
+						<tr>
+							<td><?php echo esc_html( (string) $rev['date'] ); ?></td>
+							<td><?php echo esc_html( MM_Accounts::label( (string) $rev['account_number'] ) ); ?></td>
+							<td><strong><?php echo esc_html( (string) $rev['symbol'] ); ?></strong></td>
+							<td class="mm-muted"><?php echo esc_html( (string) $rev['description'] ); ?></td>
+						</tr>
+					<?php endforeach; ?>
+				</tbody>
+			</table>
+		</div>
+		<?php
+	}
+
+	/**
+	 * Adjustments screen: the manual ACB corrections editor + list (M3a).
+	 */
+	public function render_adjustments(): void {
+		$this->guard();
+		$this->open( 'adjustments' );
+
+		if ( $this->require_tables() ) {
+			$this->close();
+			return;
+		}
+
+		$accounts = MM_Accounts::all();
+		$editing  = null;
+		if ( isset( $_GET['edit'] ) ) { // phpcs:ignore WordPress.Security.NonceVerification.Recommended
+			$editing = MM_Manual_Adjustments::get( absint( wp_unslash( $_GET['edit'] ) ) );
+		}
+
+		$this->render_tax_disclaimer();
+
+		if ( empty( $accounts ) ) {
+			echo '<div class="mm-card"><p class="mm-muted">'
+				. esc_html__( 'Sync your accounts first — an adjustment has to attach to one of them.', 'money-maker' )
+				. '</p></div>';
+			$this->close();
+			return;
+		}
+
+		$values = wp_parse_args(
+			is_array( $editing ) ? $editing : array(),
+			array(
+				'id'              => 0,
+				'account_number' => $accounts[0]['account_number'],
+				'symbol'         => '',
+				'adjustment_date' => gmdate( 'Y-m-d' ),
+				'kind'           => 'return_of_capital',
+				'quantity_delta' => '0',
+				'acb_delta'      => '0',
+				'note'           => '',
+			)
+		);
+		?>
+		<div class="mm-card">
+			<h2><?php echo esc_html( $values['id'] ? __( 'Edit adjustment', 'money-maker' ) : __( 'Add an adjustment', 'money-maker' ) ); ?></h2>
+			<p class="mm-muted">
+				<?php esc_html_e( 'Sign convention: return of capital → negative ACB change, zero quantity. Reinvested "phantom" distribution → positive ACB change (and positive quantity if new units were issued). A 2-for-1 split → positive quantity change, zero ACB change.', 'money-maker' ); ?>
+			</p>
+			<form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>" class="mm-form">
+				<input type="hidden" name="action" value="<?php echo esc_attr( MM_Manual_Adjustments::ACTION_SAVE ); ?>" />
+				<input type="hidden" name="id" value="<?php echo esc_attr( (string) $values['id'] ); ?>" />
+				<?php wp_nonce_field( MM_Manual_Adjustments::ACTION_SAVE ); ?>
+
+				<div class="mm-field">
+					<label for="mm_adj_account"><?php esc_html_e( 'Account', 'money-maker' ); ?></label>
+					<select id="mm_adj_account" name="account_number">
+						<?php foreach ( $accounts as $account ) : ?>
+							<option value="<?php echo esc_attr( (string) $account['account_number'] ); ?>" <?php selected( $account['account_number'], $values['account_number'] ); ?>>
+								<?php echo esc_html( MM_Accounts::label( $account ) ); ?>
+							</option>
+						<?php endforeach; ?>
+					</select>
+				</div>
+
+				<div class="mm-field">
+					<label for="mm_adj_symbol"><?php esc_html_e( 'Symbol', 'money-maker' ); ?></label>
+					<input type="text" id="mm_adj_symbol" name="symbol" class="regular-text"
+						value="<?php echo esc_attr( (string) $values['symbol'] ); ?>" required
+						autocomplete="off" spellcheck="false" style="text-transform:uppercase" />
+				</div>
+
+				<div class="mm-field">
+					<label for="mm_adj_date"><?php esc_html_e( 'Effective date', 'money-maker' ); ?></label>
+					<input type="date" id="mm_adj_date" name="adjustment_date"
+						value="<?php echo esc_attr( (string) $values['adjustment_date'] ); ?>" required />
+				</div>
+
+				<div class="mm-field">
+					<label for="mm_adj_kind"><?php esc_html_e( 'Kind', 'money-maker' ); ?></label>
+					<select id="mm_adj_kind" name="kind">
+						<?php foreach ( MM_Manual_Adjustments::kind_labels() as $key => $label ) : ?>
+							<option value="<?php echo esc_attr( $key ); ?>" <?php selected( $key, $values['kind'] ); ?>>
+								<?php echo esc_html( $label ); ?>
+							</option>
+						<?php endforeach; ?>
+					</select>
+				</div>
+
+				<div class="mm-field">
+					<label for="mm_adj_qty"><?php esc_html_e( 'Quantity change', 'money-maker' ); ?></label>
+					<input type="number" step="any" id="mm_adj_qty" name="quantity_delta"
+						value="<?php echo esc_attr( (string) $values['quantity_delta'] ); ?>" />
+				</div>
+
+				<div class="mm-field">
+					<label for="mm_adj_acb"><?php esc_html_e( 'Cost-base change (CAD)', 'money-maker' ); ?></label>
+					<input type="number" step="any" id="mm_adj_acb" name="acb_delta"
+						value="<?php echo esc_attr( (string) $values['acb_delta'] ); ?>" />
+				</div>
+
+				<div class="mm-field">
+					<label for="mm_adj_note"><?php esc_html_e( 'Note', 'money-maker' ); ?></label>
+					<textarea id="mm_adj_note" name="note" rows="2" class="large-text"><?php echo esc_textarea( (string) $values['note'] ); ?></textarea>
+				</div>
+
+				<?php submit_button( $values['id'] ? __( 'Save adjustment', 'money-maker' ) : __( 'Add adjustment', 'money-maker' ) ); ?>
+				<?php if ( $values['id'] ) : ?>
+					<a class="button" href="<?php echo esc_url( self::page_url( self::ADJUSTMENTS_SLUG ) ); ?>"><?php esc_html_e( 'Cancel', 'money-maker' ); ?></a>
+				<?php endif; ?>
+			</form>
+		</div>
+
+		<?php
+		$rows = MM_Manual_Adjustments::all();
+		?>
+		<div class="mm-card">
+			<h2><?php esc_html_e( 'Adjustments on record', 'money-maker' ); ?></h2>
+			<?php if ( empty( $rows ) ) : ?>
+				<p class="mm-muted"><?php esc_html_e( 'None yet.', 'money-maker' ); ?></p>
+			<?php else : ?>
+				<table class="widefat striped mm-table">
+					<thead>
+						<tr>
+							<th><?php esc_html_e( 'Date', 'money-maker' ); ?></th>
+							<th><?php esc_html_e( 'Account', 'money-maker' ); ?></th>
+							<th><?php esc_html_e( 'Symbol', 'money-maker' ); ?></th>
+							<th><?php esc_html_e( 'Kind', 'money-maker' ); ?></th>
+							<th class="mm-num"><?php esc_html_e( 'Δ Qty', 'money-maker' ); ?></th>
+							<th class="mm-num"><?php esc_html_e( 'Δ ACB (CAD)', 'money-maker' ); ?></th>
+							<th><?php esc_html_e( 'Note', 'money-maker' ); ?></th>
+							<th></th>
+						</tr>
+					</thead>
+					<tbody>
+						<?php foreach ( $rows as $row ) : ?>
+							<tr>
+								<td><?php echo esc_html( (string) $row['adjustment_date'] ); ?></td>
+								<td><?php echo esc_html( MM_Accounts::label( (string) $row['account_number'] ) ); ?></td>
+								<td><strong><?php echo esc_html( (string) $row['symbol'] ); ?></strong></td>
+								<td><?php echo esc_html( MM_Manual_Adjustments::kind_label( (string) $row['kind'] ) ); ?></td>
+								<td class="mm-num"><?php echo esc_html( self::fmt_qty( (float) $row['quantity_delta'] ) ); ?></td>
+								<td class="mm-num"><?php echo esc_html( self::fmt_cad( (float) $row['acb_delta'] ) ); ?></td>
+								<td class="mm-muted"><?php echo esc_html( (string) $row['note'] ); ?></td>
+								<td class="mm-row-actions">
+									<a href="<?php echo esc_url( add_query_arg( 'edit', (int) $row['id'], self::page_url( self::ADJUSTMENTS_SLUG ) ) ); ?>"><?php esc_html_e( 'Edit', 'money-maker' ); ?></a>
+									<form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>" style="display:inline"
+										onsubmit="return window.confirm( '<?php echo esc_js( __( 'Delete this adjustment?', 'money-maker' ) ); ?>' );">
+										<input type="hidden" name="action" value="<?php echo esc_attr( MM_Manual_Adjustments::ACTION_DELETE ); ?>" />
+										<input type="hidden" name="id" value="<?php echo esc_attr( (string) $row['id'] ); ?>" />
+										<?php wp_nonce_field( MM_Manual_Adjustments::ACTION_DELETE ); ?>
+										<button type="submit" class="button-link mm-delete-link"><?php esc_html_e( 'Delete', 'money-maker' ); ?></button>
+									</form>
+								</td>
+							</tr>
+						<?php endforeach; ?>
+					</tbody>
+				</table>
+			<?php endif; ?>
+		</div>
+		<?php
+		$this->close();
+	}
+
+	/* ---------------------------------------------------------------------
+	 * Milestone 3 — shared helpers
+	 * ------------------------------------------------------------------- */
+
+	/**
+	 * Print the "not tax advice" disclaimer. Called on every tax screen.
+	 */
+	private function render_tax_disclaimer(): void {
+		echo '<div class="mm-inline-notice">'
+			. esc_html__( 'This tool assists with tax reporting — it does not file your taxes and is not tax advice. Pooled ACB, realized gains, and superficial-loss checks are mechanical estimates from your synced data. You are responsible for what you file; review with your accountant.', 'money-maker' )
+			. '</div>';
+	}
+
+	/**
+	 * "Tables missing" guard for the M3 screens. Returns true when it printed a
+	 * notice and the caller should stop.
+	 */
+	private function require_tables(): bool {
+		if ( MM_DB::is_installed() ) {
+			return false;
+		}
+
+		echo '<div class="mm-inline-notice mm-inline-notice--bad">'
+			. esc_html__( 'The custom tables are missing. Deactivate and reactivate the plugin to create them.', 'money-maker' )
+			. '</div>';
+
+		return true;
+	}
+
+	/**
+	 * Format a CAD amount, e.g. "1,234.56" or "-42.00".
+	 */
+	private static function fmt_cad( float $amount ): string {
+		return number_format( $amount, 2, '.', ',' );
+	}
+
+	/**
+	 * Format a share quantity: up to 4 dp, trailing zeros trimmed.
+	 */
+	private static function fmt_qty( float $qty ): string {
+		$s = number_format( $qty, 4, '.', ',' );
+		return false !== strpos( $s, '.' ) ? rtrim( rtrim( $s, '0' ), '.' ) : $s;
+	}
+
+	/**
+	 * A coloured gain/loss cell (CAD), optionally with a percentage. Returns
+	 * markup limited to a span + text (safe for wp_kses_post at the call site).
+	 */
+	private static function gain_cell( ?float $amount, ?float $pct ): string {
+		if ( null === $amount ) {
+			return '<span class="mm-muted">&mdash;</span>';
+		}
+
+		$tone = $amount > 0.004 ? 'pos' : ( $amount < -0.004 ? 'neg' : 'flat' );
+		$text = self::fmt_cad( $amount );
+		if ( null !== $pct ) {
+			$text .= ' (' . number_format( $pct, 1, '.', ',' ) . '%)';
+		}
+
+		return '<span class="mm-gain mm-gain--' . esc_attr( $tone ) . '">' . esc_html( $text ) . '</span>';
 	}
 
 	/* ---------------------------------------------------------------------
@@ -1129,10 +1904,13 @@ final class MM_Admin {
 	private function open( string $active ): void {
 		$environment = MM_Settings::instance()->get_settings()['environment'];
 		$tabs        = array(
-			'dashboard'  => array( __( 'Dashboard', 'money-maker' ), self::MENU_SLUG ),
-			'connection' => array( __( 'Connection', 'money-maker' ), self::CONNECTION_SLUG ),
-			'sync'       => array( __( 'Data Sync', 'money-maker' ), self::SYNC_SLUG ),
-			'settings'   => array( __( 'Settings', 'money-maker' ), self::SETTINGS_SLUG ),
+			'dashboard'   => array( __( 'Dashboard', 'money-maker' ), self::MENU_SLUG ),
+			'holdings'    => array( __( 'Holdings', 'money-maker' ), self::HOLDINGS_SLUG ),
+			'gains'       => array( __( 'Realized Gains', 'money-maker' ), self::GAINS_SLUG ),
+			'adjustments' => array( __( 'Adjustments', 'money-maker' ), self::ADJUSTMENTS_SLUG ),
+			'connection'  => array( __( 'Connection', 'money-maker' ), self::CONNECTION_SLUG ),
+			'sync'        => array( __( 'Data Sync', 'money-maker' ), self::SYNC_SLUG ),
+			'settings'    => array( __( 'Settings', 'money-maker' ), self::SETTINGS_SLUG ),
 		);
 		?>
 		<div class="wrap mm-app">

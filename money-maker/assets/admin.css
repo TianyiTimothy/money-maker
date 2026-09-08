@@ -348,6 +348,61 @@
 .mm-app .mm-log td { font-size: 12px; vertical-align: top; }
 .mm-app .mm-log__detail { color: var(--mm-muted); max-width: 32ch; }
 
+/* ---- data tables (Holdings / Realized Gains / Adjustments) --------- */
+
+.mm-app .mm-table { margin: 12px 0; }
+.mm-app .mm-table th,
+.mm-app .mm-table td { font-size: 12px; vertical-align: top; }
+.mm-app .mm-table .mm-num { text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.mm-app .mm-table tfoot th,
+.mm-app .mm-table tfoot td { font-weight: 700; border-top: 2px solid var(--mm-line); }
+.mm-app .mm-table .mm-pill { text-transform: none; }
+
+.mm-app .mm-gain--pos { color: var(--mm-ok); font-weight: 600; }
+.mm-app .mm-gain--neg { color: var(--mm-bad); font-weight: 600; }
+.mm-app .mm-gain--flat { color: var(--mm-muted); }
+
+.mm-app .mm-row-actions { white-space: nowrap; }
+.mm-app .mm-row-actions a { margin-right: 10px; font-size: 12px; }
+.mm-app .mm-delete-link {
+	color: var(--mm-bad);
+	background: none;
+	border: 0;
+	padding: 0;
+	cursor: pointer;
+	font-size: 12px;
+	text-decoration: underline;
+}
+
+.mm-app .mm-year-picker {
+	display: flex;
+	align-items: center;
+	gap: 10px;
+	margin-top: 14px;
+}
+.mm-app .mm-year-picker label { font-weight: 600; font-size: 13px; }
+
+/* ---- inline-SVG charts (mm-charts.js) ----------------------------- */
+
+.mm-app .mm-chart {
+	margin: 12px 0;
+	min-height: 60px;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	color: var(--mm-muted);
+	font-size: 13px;
+}
+.mm-app .mm-chart svg { width: 100%; height: auto; display: block; }
+.mm-app .mm-chart__grid { stroke: var(--mm-line); stroke-width: 1; }
+.mm-app .mm-chart__grid.is-zero { stroke: var(--mm-muted); stroke-dasharray: 3 3; }
+.mm-app .mm-chart__label { fill: var(--mm-muted); font-size: 10px; }
+.mm-app .mm-chart__line { fill: none; stroke: var(--mm-green); stroke-width: 2; }
+.mm-app .mm-chart__area { fill: var(--mm-green); opacity: .08; }
+.mm-app .mm-chart__dot { fill: var(--mm-green); }
+.mm-app .mm-chart__bar.is-pos { fill: var(--mm-ok); }
+.mm-app .mm-chart__bar.is-neg { fill: var(--mm-bad); }
+
 @media (prefers-reduced-motion: reduce) {
 	.mm-app * { transition: none !important; }
 }
