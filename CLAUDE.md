@@ -156,7 +156,32 @@ Use `dbDelta()` for schema; store a `mm_db_version` option and migrate on upgrad
     `mm_positions_snapshots`, one dated snapshot per run. First thing to cut / defer to M3
     under scope pressure; the table schema is created in M2a regardless.
 * **Milestone 3:** Frontend/admin dashboard — positions, pooled ACB, realized gains/losses,
-  superficial-loss warnings, historical charts.
+  superficial-loss warnings, historical charts. Tentative sub-steps (confirm at start):
+  * **M3a:** `MM_Manual_Adjustments` repo + admin CRUD UI for corporate actions
+    (splits, mergers, return of capital, reinvested/"phantom" distributions). Fills the
+    `mm_manual_adjustments` table built in M2a. Needed first — ACB is not trustworthy
+    without it.
+  * **M3b:** `MM_Tax_ACB` — pooled average-cost engine (non-registered accounts only, via
+    `MM_Accounts::non_registered_numbers()`). Walk activities chronologically per
+    (account, symbol): buys add cost + commission to the pool, sells realise
+    gain/loss against average cost and reduce proceeds by commission, USD uses the
+    stored `net_amount_cad` / `fx_rate`. Apply `mm_manual_adjustments`. Output: running
+    ACB per security + a realised-disposition list. Admin "Realized gains" screen by tax
+    (calendar) year. **Open Q:** compute on the fly vs a materialised `mm_acb_ledger`.
+  * **M3c:** `MM_Tax_Superficial_Loss` — for each realised loss, scan the 61-day window
+    (30d before / sale day / 30d after) for a buy of the same security, confirm still
+    held at window end, compute the denied portion, add it back pro-rata to the
+    remaining shares' ACB. Warning-only list; always "review with your accountant".
+    Affiliated-person triggers out of scope.
+  * **M3d:** Holdings dashboard — current positions (latest `mm_positions_snapshots`)
+    with pooled ACB and unrealised gain/loss, per-account and consolidated.
+  * **M3e:** Historical charts — portfolio value + realised P&L over time from the
+    snapshot history. **Open Q:** chart library (Chart.js via CDN, hand-rolled SVG, or
+    none) — needs a decision, no JS deps without asking.
+  * Cross-cutting: every tax figure in CAD; disclaimer on every tax screen; the exact
+    Questrade `action`/`type` → ACB-event mapping has to be enumerated against real
+    practice-account activity data (return of capital, reinvested dividends, journalled
+    shares, option assignment/exercise, transfers-in).
 
 ### Testing
 * **No automated test suite.** The user tests each sub-step manually in the local
