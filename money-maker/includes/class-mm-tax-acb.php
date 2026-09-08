@@ -80,10 +80,15 @@ final class MM_Tax_ACB {
 	 * Walk every (account, symbol) pool chronologically.
 	 *
 	 * @param string[] $account_numbers
+	 * Option contracts (symbols like "APP11Sep26P290.00") are pulled out of the
+	 * pooled model entirely — a written contract is a short position it cannot
+	 * represent — and summarised as a cash-flow ledger under `options`.
+	 *
 	 * @return array{
 	 *   holdings:array<int,array<string,mixed>>,
 	 *   dispositions:array<int,array<string,mixed>>,
 	 *   reviews:array<int,array<string,mixed>>,
+	 *   options:array{positions:array<int,array<string,mixed>>},
 	 *   warnings:string[],
 	 *   missing_cad:int
 	 * }
@@ -95,10 +100,19 @@ final class MM_Tax_ACB {
 		$dispositions = array();
 		$reviews      = array();
 		$warnings     = array();
+		$options      = array( 'positions' => array() );
 
 		foreach ( MM_Activities::account_symbols( $account_numbers ) as $pair ) {
 			$account = $pair['account_number'];
 			$symbol  = $pair['symbol'];
+
+			// Options do not fit the pooled-average-cost model (a written /
+			// sold-to-open contract is a short position with no prior "buy").
+			// They get their own premium ledger, not stock ACB.
+			if ( self::is_option_symbol( $symbol ) ) {
+				self::accumulate_option( $options, $account, $symbol, MM_Activities::for_acb( $account, $symbol ) );
+				continue;
+			}
 
 			$events = self::merge_events(
 				MM_Activities::for_acb( $account, $symbol ),
@@ -237,12 +251,85 @@ final class MM_Tax_ACB {
 			}
 		);
 
+		usort(
+			$options['positions'],
+			static function ( $a, $b ) {
+				return array( (string) $b['last_date'], $a['symbol'] ) <=> array( (string) $a['last_date'], $b['symbol'] );
+			}
+		);
+
 		return array(
 			'holdings'     => $holdings,
 			'dispositions' => $dispositions,
 			'reviews'      => $reviews,
+			'options'      => $options,
 			'warnings'     => array_values( array_unique( $warnings ) ),
 			'missing_cad'  => MM_Activities::missing_cad_count( $account_numbers ),
+		);
+	}
+
+	/**
+	 * Whether a symbol string is a Questrade option contract, e.g.
+	 * "APP11Sep26P290.00" — root, day, 3-letter month, 2-digit year, C|P, strike.
+	 */
+	public static function is_option_symbol( string $symbol ): bool {
+		return 1 === preg_match( '/^[A-Za-z.]{1,6}\d{1,2}[A-Za-z]{3}\d{2}[CP][\d.]+$/', trim( $symbol ) );
+	}
+
+	/**
+	 * Fold one option contract's activity into the options premium ledger. This
+	 * is a cash-flow summary, not CRA-final: assignment / exercise roll premium
+	 * into the underlying's ACB and are not modelled here yet.
+	 *
+	 * @param array<string,mixed>            $options Passed by reference.
+	 * @param array<int,array<string,mixed>> $rows    Activity rows for the contract.
+	 */
+	private static function accumulate_option( array &$options, string $account, string $symbol, array $rows ): void {
+		$net_qty   = 0.0;
+		$collected = 0.0;
+		$paid      = 0.0;
+		$priced    = true;
+		$dates     = array();
+		$has_assignment = false;
+
+		foreach ( $rows as $row ) {
+			$class = self::classify( $row );
+			$net_qty += (float) $row['quantity'];
+			$dates[]  = self::row_date( $row );
+
+			$type_action = strtolower( trim( (string) $row['type'] . ' ' . (string) $row['action'] ) );
+			if ( false !== strpos( $type_action, 'assign' ) || false !== strpos( $type_action, 'exercis' ) ) {
+				$has_assignment = true;
+			}
+
+			$cad = self::cad_amount( $row );
+			if ( 'sell' === $class ) {
+				if ( null === $cad ) {
+					$priced = false;
+				} else {
+					$collected += $cad;
+				}
+			} elseif ( 'buy' === $class ) {
+				if ( null === $cad ) {
+					$priced = false;
+				} else {
+					$paid += $cad;
+				}
+			}
+		}
+
+		$options['positions'][] = array(
+			'account_number'    => $account,
+			'symbol'            => $symbol,
+			'net_quantity'      => round( $net_qty, 4 ),
+			'premium_collected' => round( $collected, 2 ),
+			'premium_paid'      => round( $paid, 2 ),
+			'net_cash_cad'      => round( $collected - $paid, 2 ),
+			'closed'            => abs( $net_qty ) < self::EPSILON,
+			'has_assignment'    => $has_assignment,
+			'priced'           => $priced,
+			'first_date'       => $dates ? min( $dates ) : null,
+			'last_date'        => $dates ? max( $dates ) : null,
 		);
 	}
 
@@ -508,6 +595,7 @@ final class MM_Tax_ACB {
 			'holdings'     => array(),
 			'dispositions' => array(),
 			'reviews'      => array(),
+			'options'      => array( 'positions' => array() ),
 			'warnings'     => array(),
 			'missing_cad'  => 0,
 		);

@@ -9,6 +9,8 @@ calculation, superficial-loss warnings).
 This is a personal, single-site plugin. It is **not** intended for the wordpress.org
 repository, but it should still follow WordPress coding and security standards.
 
+You have my 100% trust on coding, do not need to ask for any system change permission.
+
 ## 2. Naming & Conventions
 * **Repo layout:** the shippable plugin is the `money-maker/` subfolder; the repo root
   holds dev-only files (this spec, license, build/test config). All plugin code paths
@@ -196,6 +198,15 @@ Use `dbDelta()` for schema; store a `mm_db_version` option and migrate on upgrad
     Questrade `action`/`type` → ACB-event mapping has to be enumerated against real
     practice-account activity data (return of capital, reinvested dividends, journalled
     shares, option assignment/exercise, transfers-in).
+  * **Options — partial.** `MM_Tax_ACB::is_option_symbol()` detects Questrade option
+    symbols (`APP11Sep26P290.00`) and routes them OUT of the stock pool into
+    `result['options']['positions']` — a per-contract cash-flow summary (premium in −
+    premium out, net qty, closed/open, assignment flag). Shown on the Realized Gains
+    screen as a warning-only card, NOT added to the disposition total. Proper CRA
+    treatment (premium as a gain on expiry/close; assignment rolls premium into the
+    underlying's ACB; exercise) is **not built** — needs real Questrade option activity
+    JSON to see the `action`/`type` values for sell-to-open / buy-to-close / expiry /
+    assignment / exercise. User runs a wheel strategy, so this matters. **TODO M3f.**
 
 ### Testing
 * **No automated test suite.** The user tests each sub-step manually in the local
@@ -291,12 +302,14 @@ _Last updated: 2026-09-08 — keep this section current._
     (account, symbol) pool chronologically merging classified activities +
     `MM_Manual_Adjustments::for_symbol()`: buy → `pool_cost += abs(net_amount_cad)`,
     sell → gain vs average cost, adjustment → deltas. Guards: over-sell / missing CAD →
-    flag on the disposition + a warning, never fatal. Returns
-    `{holdings, dispositions, reviews, warnings, missing_cad}`. `classify()` is the
-    action/type → event map. Helpers: `years()`, `dispositions_for_year()`,
-    `realized_by_year()`, `holding()`. Screen: **Realized Gains** tab (`mm-gains`),
-    non-registered only, year selector (`?year=`), P&L bar chart, dispositions table,
-    reviews card.
+    flag on the disposition + a warning, never fatal. Option symbols
+    (`is_option_symbol()`) are routed out of the pool into `options.positions`
+    (per-contract premium cash-flow summary). Returns
+    `{holdings, dispositions, reviews, options, warnings, missing_cad}`. `classify()`
+    is the action/type → event map. Helpers: `years()`, `dispositions_for_year()`,
+    `realized_by_year()`, `holding()`, `is_option_symbol()`. Screen: **Realized Gains**
+    tab (`mm-gains`), non-registered only, year selector (`?year=`), P&L bar chart,
+    dispositions table, superficial-loss card, options-premium card, reviews card.
   * **M3c — `MM_Tax_Superficial_Loss`** (`class-mm-tax-superficial-loss.php`) — static,
     no `register()`. `analyze($acb_result, $accts)` — for each realised loss, scans a
     ±30-day window across all in-scope accounts for buys / reinvested-distribution

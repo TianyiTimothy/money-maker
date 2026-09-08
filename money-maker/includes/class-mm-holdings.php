@@ -74,8 +74,9 @@ final class MM_Holdings {
 					continue;
 				}
 
-				$holding  = $is_registered ? null : MM_Tax_ACB::holding( $acb, $number, $symbol );
-				$currency = $holding['currency'] ?? 'CAD';
+				$is_option = MM_Tax_ACB::is_option_symbol( $symbol );
+				$holding   = ( $is_registered || $is_option ) ? null : MM_Tax_ACB::holding( $acb, $number, $symbol );
+				$currency  = $holding['currency'] ?? 'CAD';
 
 				$market_native = null !== $row['current_market_value'] ? (float) $row['current_market_value'] : null;
 				$market_cad    = null === $market_native ? null : self::to_cad( $market_native, $currency, (string) $snapshot_date );
@@ -94,6 +95,7 @@ final class MM_Holdings {
 					'unrealised'    => null === $unrealised ? null : round( $unrealised, 2 ),
 					'unrealised_pct' => ( $unrealised !== null && $book > 0 ) ? round( $unrealised / $book * 100, 2 ) : null,
 					'registered'    => $is_registered,
+					'is_option'     => $is_option,
 				);
 
 				$subtotal['book']       += (float) ( $book ?? 0 );

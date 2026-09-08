@@ -848,7 +848,9 @@ final class MM_Admin {
 					<tr>
 						<td>
 							<strong><?php echo esc_html( $line['symbol'] ); ?></strong>
-							<?php if ( 'CAD' !== ( $line['currency'] ?? 'CAD' ) ) : ?>
+							<?php if ( ! empty( $line['is_option'] ) ) : ?>
+								<span class="mm-pill mm-pill--muted"><?php esc_html_e( 'option', 'money-maker' ); ?></span>
+							<?php elseif ( 'CAD' !== ( $line['currency'] ?? 'CAD' ) ) : ?>
 								<span class="mm-pill mm-pill--muted"><?php echo esc_html( (string) $line['currency'] ); ?></span>
 							<?php endif; ?>
 						</td>
@@ -1028,8 +1030,83 @@ final class MM_Admin {
 
 		<?php
 		$this->render_superficial_loss_card( MM_Tax_Superficial_Loss::analyze( $acb, $accounts ) );
+		$this->render_options_card( $acb['options']['positions'] );
 		$this->render_reviews_card( $acb['reviews'] );
 		$this->close();
+	}
+
+	/**
+	 * Options premium ledger — a cash-flow summary per contract. NOT folded into
+	 * the disposition total: assignment/exercise roll premium into the
+	 * underlying's ACB and are not modelled yet.
+	 *
+	 * @param array<int,array<string,mixed>> $positions
+	 */
+	private function render_options_card( array $positions ): void {
+		if ( empty( $positions ) ) {
+			return;
+		}
+
+		$net_closed = 0.0;
+		foreach ( $positions as $p ) {
+			if ( $p['closed'] && ! $p['has_assignment'] ) {
+				$net_closed += (float) $p['net_cash_cad'];
+			}
+		}
+		?>
+		<div class="mm-card mm-card--danger">
+			<h2><?php esc_html_e( 'Options premium (not yet in ACB)', 'money-maker' ); ?></h2>
+			<div class="mm-inline-notice mm-inline-notice--warn">
+				<?php esc_html_e( 'The pooled-ACB engine skips option contracts — a written/sold-to-open contract is a short position it cannot model. This is a raw cash-flow summary only. For a closed contract with no assignment, net cash ≈ the capital gain in the year it closed. Assignment/exercise instead roll the premium into the underlying stock\'s ACB. Confirm all of this with your accountant.', 'money-maker' ); ?>
+			</div>
+			<table class="widefat striped mm-table">
+				<thead>
+					<tr>
+						<th><?php esc_html_e( 'Contract', 'money-maker' ); ?></th>
+						<th><?php esc_html_e( 'Account', 'money-maker' ); ?></th>
+						<th class="mm-num"><?php esc_html_e( 'Net qty', 'money-maker' ); ?></th>
+						<th class="mm-num"><?php esc_html_e( 'Premium in (CAD)', 'money-maker' ); ?></th>
+						<th class="mm-num"><?php esc_html_e( 'Premium out (CAD)', 'money-maker' ); ?></th>
+						<th class="mm-num"><?php esc_html_e( 'Net cash (CAD)', 'money-maker' ); ?></th>
+						<th><?php esc_html_e( 'Status', 'money-maker' ); ?></th>
+						<th><?php esc_html_e( 'Last activity', 'money-maker' ); ?></th>
+					</tr>
+				</thead>
+				<tbody>
+					<?php foreach ( $positions as $p ) : ?>
+						<tr>
+							<td><strong><?php echo esc_html( (string) $p['symbol'] ); ?></strong></td>
+							<td><?php echo esc_html( MM_Accounts::label( (string) $p['account_number'] ) ); ?></td>
+							<td class="mm-num"><?php echo esc_html( self::fmt_qty( (float) $p['net_quantity'] ) ); ?></td>
+							<td class="mm-num"><?php echo esc_html( self::fmt_cad( (float) $p['premium_collected'] ) ); ?></td>
+							<td class="mm-num"><?php echo esc_html( self::fmt_cad( (float) $p['premium_paid'] ) ); ?></td>
+							<td class="mm-num"><?php echo wp_kses_post( self::gain_cell( (float) $p['net_cash_cad'], null ) ); ?></td>
+							<td>
+								<?php if ( $p['has_assignment'] ) : ?>
+									<span class="mm-pill mm-pill--warn"><?php esc_html_e( 'assigned', 'money-maker' ); ?></span>
+								<?php elseif ( $p['closed'] ) : ?>
+									<span class="mm-pill mm-pill--ok"><?php esc_html_e( 'closed', 'money-maker' ); ?></span>
+								<?php else : ?>
+									<span class="mm-pill mm-pill--muted"><?php esc_html_e( 'open', 'money-maker' ); ?></span>
+								<?php endif; ?>
+								<?php if ( ! $p['priced'] ) : ?>
+									<span class="mm-pill mm-pill--bad"><?php esc_html_e( 'no FX', 'money-maker' ); ?></span>
+								<?php endif; ?>
+							</td>
+							<td class="mm-muted"><?php echo esc_html( (string) $p['last_date'] ); ?></td>
+						</tr>
+					<?php endforeach; ?>
+				</tbody>
+				<tfoot>
+					<tr>
+						<th colspan="5"><?php esc_html_e( 'Net cash on closed contracts (no assignment)', 'money-maker' ); ?></th>
+						<td class="mm-num"><?php echo wp_kses_post( self::gain_cell( round( $net_closed, 2 ), null ) ); ?></td>
+						<td colspan="2"></td>
+					</tr>
+				</tfoot>
+			</table>
+		</div>
+		<?php
 	}
 
 	/**
