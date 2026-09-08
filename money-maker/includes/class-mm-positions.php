@@ -90,6 +90,78 @@ final class MM_Positions {
 	}
 
 	/**
+	 * The most recent snapshot date for one account, or null.
+	 */
+	public static function latest_date_for( string $account_number ): ?string {
+		global $wpdb;
+
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery
+		$date = $wpdb->get_var(
+			$wpdb->prepare(
+				'SELECT MAX(snapshot_date) FROM ' . MM_DB::table( 'positions_snapshots' ) . ' WHERE account_number = %s',
+				trim( $account_number )
+			)
+		);
+
+		return $date ?: null;
+	}
+
+	/**
+	 * The rows of the most recent snapshot for one account (open positions only).
+	 *
+	 * @return array<int,array<string,mixed>>
+	 */
+	public static function latest_snapshot( string $account_number ): array {
+		global $wpdb;
+
+		$latest = self::latest_date_for( $account_number );
+		if ( null === $latest ) {
+			return array();
+		}
+
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery
+		$rows = $wpdb->get_results(
+			$wpdb->prepare(
+				'SELECT * FROM ' . MM_DB::table( 'positions_snapshots' ) . '
+				 WHERE account_number = %s AND snapshot_date = %s AND open_quantity <> 0
+				 ORDER BY symbol ASC',
+				trim( $account_number ),
+				$latest
+			),
+			ARRAY_A
+		);
+
+		return is_array( $rows ) ? $rows : array();
+	}
+
+	/**
+	 * Portfolio market value per snapshot date (sum of current_market_value as
+	 * reported by Questrade, not FX-normalised), oldest first.
+	 *
+	 * @return array<string,float> snapshot_date => total
+	 */
+	public static function value_series(): array {
+		global $wpdb;
+
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery
+		$rows = $wpdb->get_results(
+			'SELECT snapshot_date, SUM(current_market_value) AS total
+			 FROM ' . MM_DB::table( 'positions_snapshots' ) . '
+			 WHERE current_market_value IS NOT NULL
+			 GROUP BY snapshot_date
+			 ORDER BY snapshot_date ASC',
+			ARRAY_A
+		);
+
+		$series = array();
+		foreach ( is_array( $rows ) ? $rows : array() as $row ) {
+			$series[ (string) $row['snapshot_date'] ] = (float) $row['total'];
+		}
+
+		return $series;
+	}
+
+	/**
 	 * The most recent snapshot date on record, or null.
 	 */
 	public static function latest_date(): ?string {

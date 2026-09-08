@@ -157,6 +157,40 @@ final class MM_Accounts {
 	}
 
 	/**
+	 * One account row by its (full) number, or null.
+	 *
+	 * @return array<string,mixed>|null
+	 */
+	public static function get( string $account_number ): ?array {
+		global $wpdb;
+
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery
+		$row = $wpdb->get_row(
+			$wpdb->prepare( 'SELECT * FROM ' . MM_DB::table( 'accounts' ) . ' WHERE account_number = %s', trim( $account_number ) ),
+			ARRAY_A
+		);
+
+		return $row ?: null;
+	}
+
+	/**
+	 * Short display label for an account: type + masked number,
+	 * e.g. "Margin ••••1234". Accepts a row or a bare number.
+	 *
+	 * @param array<string,mixed>|string $account
+	 */
+	public static function label( $account ): string {
+		if ( is_string( $account ) ) {
+			$account = self::get( $account ) ?? array( 'account_number' => $account, 'type' => '' );
+		}
+
+		$number = self::mask( (string) ( $account['account_number'] ?? '' ) );
+		$type   = trim( (string) ( $account['type'] ?? '' ) );
+
+		return '' !== $type ? $type . ' ' . $number : $number;
+	}
+
+	/**
 	 * Just the account numbers, for sync loops.
 	 *
 	 * @return string[]

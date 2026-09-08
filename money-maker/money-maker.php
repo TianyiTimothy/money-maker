@@ -33,6 +33,10 @@ require_once MM_INCLUDES_DIR . 'class-mm-accounts.php';
 require_once MM_INCLUDES_DIR . 'class-mm-fx.php';
 require_once MM_INCLUDES_DIR . 'class-mm-activities.php';
 require_once MM_INCLUDES_DIR . 'class-mm-positions.php';
+require_once MM_INCLUDES_DIR . 'class-mm-manual-adjustments.php';
+require_once MM_INCLUDES_DIR . 'class-mm-tax-acb.php';
+require_once MM_INCLUDES_DIR . 'class-mm-tax-superficial-loss.php';
+require_once MM_INCLUDES_DIR . 'class-mm-holdings.php';
 require_once MM_INCLUDES_DIR . 'class-mm-sync-log.php';
 require_once MM_INCLUDES_DIR . 'class-mm-sync.php';
 require_once MM_INCLUDES_DIR . 'class-mm-settings.php';
@@ -49,8 +53,12 @@ function mm_bootstrap() {
 
 	MM_DB::register();
 	MM_Sync::register();
+	MM_Manual_Adjustments::register();
 	MM_Settings::instance()->register();
 	MM_Admin::instance()->register();
+
+	// Realised-ACB results are cached; a completed sync invalidates them.
+	add_action( 'mm/sync/completed', array( 'MM_Tax_ACB', 'flush' ) );
 }
 add_action( 'plugins_loaded', 'mm_bootstrap' );
 

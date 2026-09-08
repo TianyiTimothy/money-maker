@@ -224,6 +224,123 @@ final class MM_Activities {
 		);
 	}
 
+	/**
+	 * Distinct (account_number, symbol) pairs that carry a symbol, restricted to
+	 * a set of accounts — the pools the ACB engine needs to walk.
+	 *
+	 * @param string[] $account_numbers
+	 * @return array<int,array{account_number:string,symbol:string}>
+	 */
+	public static function account_symbols( array $account_numbers ): array {
+		global $wpdb;
+
+		$account_numbers = array_values( array_filter( array_map( 'strval', $account_numbers ) ) );
+		if ( empty( $account_numbers ) ) {
+			return array();
+		}
+
+		$table        = MM_DB::table( 'activities' );
+		$placeholders = implode( ', ', array_fill( 0, count( $account_numbers ), '%s' ) );
+
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery, WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+		$rows = $wpdb->get_results(
+			$wpdb->prepare(
+				"SELECT DISTINCT account_number, symbol FROM {$table}
+				 WHERE symbol <> '' AND account_number IN ({$placeholders})
+				 ORDER BY account_number ASC, symbol ASC",
+				$account_numbers
+			),
+			ARRAY_A
+		);
+
+		return is_array( $rows ) ? array_map(
+			static function ( $row ) {
+				return array(
+					'account_number' => (string) $row['account_number'],
+					'symbol'         => (string) $row['symbol'],
+				);
+			},
+			$rows
+		) : array();
+	}
+
+	/**
+	 * Every stored activity for one (account, symbol) pool, in the order the ACB
+	 * engine applies them: by settlement date, then intraday by timestamp, then
+	 * insertion order.
+	 *
+	 * @return array<int,array<string,mixed>>
+	 */
+	public static function for_acb( string $account_number, string $symbol ): array {
+		global $wpdb;
+
+		$table = MM_DB::table( 'activities' );
+
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery
+		$rows = $wpdb->get_results(
+			$wpdb->prepare(
+				"SELECT id, settlement_date, trade_date, transaction_at, action, type, symbol,
+				        quantity, price, commission, gross_amount, net_amount, currency,
+				        fx_rate, fx_rate_date, net_amount_cad
+				 FROM {$table}
+				 WHERE account_number = %s AND symbol = %s
+				 ORDER BY COALESCE(settlement_date, trade_date, DATE(transaction_at)) ASC,
+				          transaction_at ASC, id ASC",
+				$account_number,
+				$symbol
+			),
+			ARRAY_A
+		);
+
+		return is_array( $rows ) ? $rows : array();
+	}
+
+	/**
+	 * Non-CAD activity rows still missing a CAD conversion, for a set of
+	 * accounts. Drives a "run an FX sync" warning on the tax screens.
+	 *
+	 * @param string[] $account_numbers
+	 */
+	public static function missing_cad_count( array $account_numbers ): int {
+		global $wpdb;
+
+		$account_numbers = array_values( array_filter( array_map( 'strval', $account_numbers ) ) );
+		if ( empty( $account_numbers ) ) {
+			return 0;
+		}
+
+		$table        = MM_DB::table( 'activities' );
+		$placeholders = implode( ', ', array_fill( 0, count( $account_numbers ), '%s' ) );
+
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery, WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+		return (int) $wpdb->get_var(
+			$wpdb->prepare(
+				"SELECT COUNT(*) FROM {$table}
+				 WHERE currency <> 'CAD' AND net_amount_cad IS NULL
+				   AND account_number IN ({$placeholders})",
+				$account_numbers
+			)
+		);
+	}
+
+	/**
+	 * Row count + newest synced_at — part of the ACB cache fingerprint.
+	 *
+	 * @return array{count:int,synced_at:?string}
+	 */
+	public static function fingerprint_parts(): array {
+		global $wpdb;
+
+		$table = MM_DB::table( 'activities' );
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery
+		$row = $wpdb->get_row( "SELECT COUNT(*) AS c, MAX(synced_at) AS s FROM {$table}", ARRAY_A );
+
+		return array(
+			'count'     => $row ? (int) $row['c'] : 0,
+			'synced_at' => $row && $row['s'] ? (string) $row['s'] : null,
+		);
+	}
+
 	/* ------------------------------------------------------------------ */
 
 	/**
