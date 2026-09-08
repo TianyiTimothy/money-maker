@@ -14,6 +14,17 @@ defined( 'WP_UNINSTALL_PLUGIN' ) || exit;
 delete_option( 'mm_settings' );       // M1a: environment toggle.
 delete_option( 'mm_token_bundle' );    // M1c: encrypted Questrade token bundle.
 delete_option( 'mm_token_lock' );      // M1c: token-refresh lock.
+delete_option( 'mm_db_version' );      // M2a: installed schema version.
+delete_option( 'mm_sync_state' );      // M2d: backfill progress.
+delete_option( 'mm_fx_coverage' );     // M2c: fetched FX date span.
+
+// Scheduled sync events (deactivation clears these too; belt and braces).
+wp_clear_scheduled_hook( 'mm/sync/incremental' );
+wp_clear_scheduled_hook( 'mm/sync/backfill' );
+
+// Custom tables (M2a). Load the schema class for its table list + drop helper.
+require_once __DIR__ . '/includes/class-mm-db.php';
+MM_DB::drop_all();
 
 // Transient carrying admin notices across redirects.
 delete_transient( 'mm_admin_notices' );

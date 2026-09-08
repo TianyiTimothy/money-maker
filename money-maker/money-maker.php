@@ -28,6 +28,13 @@ require_once MM_INCLUDES_DIR . 'class-mm-crypto.php';
 require_once MM_INCLUDES_DIR . 'class-mm-lock.php';
 require_once MM_INCLUDES_DIR . 'class-mm-token-store.php';
 require_once MM_INCLUDES_DIR . 'class-mm-questrade-client.php';
+require_once MM_INCLUDES_DIR . 'class-mm-db.php';
+require_once MM_INCLUDES_DIR . 'class-mm-accounts.php';
+require_once MM_INCLUDES_DIR . 'class-mm-fx.php';
+require_once MM_INCLUDES_DIR . 'class-mm-activities.php';
+require_once MM_INCLUDES_DIR . 'class-mm-positions.php';
+require_once MM_INCLUDES_DIR . 'class-mm-sync-log.php';
+require_once MM_INCLUDES_DIR . 'class-mm-sync.php';
 require_once MM_INCLUDES_DIR . 'class-mm-settings.php';
 require_once MM_INCLUDES_DIR . 'class-mm-admin.php';
 
@@ -40,15 +47,21 @@ require_once MM_INCLUDES_DIR . 'class-mm-admin.php';
 function mm_bootstrap() {
 	load_plugin_textdomain( 'money-maker', false, dirname( MM_PLUGIN_BASENAME ) . '/languages' );
 
+	MM_DB::register();
+	MM_Sync::register();
 	MM_Settings::instance()->register();
 	MM_Admin::instance()->register();
 }
 add_action( 'plugins_loaded', 'mm_bootstrap' );
 
 /**
- * Activation: seed default options. Safe to run repeatedly.
+ * Activation: create custom tables and seed default options. Safe to run
+ * repeatedly — dbDelta() only applies schema differences.
  */
 function mm_activate() {
+	MM_DB::install();
+	MM_Sync::ensure_scheduled();
+
 	if ( false === get_option( 'mm_settings' ) ) {
 		add_option( 'mm_settings', array( 'environment' => 'practice' ) );
 	}
@@ -56,10 +69,14 @@ function mm_activate() {
 register_activation_hook( __FILE__, 'mm_activate' );
 
 /**
- * Deactivation: release any held token-refresh lock so a later reactivation
- * starts clean.
+ * Deactivation: unschedule sync cron events and release any held token-refresh
+ * lock so a later reactivation starts clean.
  */
 function mm_deactivate() {
+	if ( class_exists( 'MM_Sync' ) ) {
+		MM_Sync::unschedule_all();
+	}
+
 	if ( class_exists( 'MM_Lock' ) ) {
 		MM_Lock::release();
 	}

@@ -138,7 +138,23 @@ Use `dbDelta()` for schema; store a `mm_db_version` option and migrate on upgrad
     menu (`MM_Admin`, view layer); rebuilt as a card-based Dashboard + Connection +
     Settings tabs. `MM_Settings` slimmed to storage + form handlers.
 * **Milestone 2:** Custom tables + `dbDelta` migrations; scheduled + manual sync for
-  accounts and activities with dedup; FX rate fetching.
+  accounts and activities with dedup; FX rate fetching. Split into sub-steps:
+  * **M2a:** `MM_DB` — the six `CREATE TABLE`s via `dbDelta`, `mm_db_version` option,
+    migration runner (activation + `admin_init` version check), `uninstall.php` drops
+    the tables.
+  * **M2b:** `MM_Sync` orchestrator + `mm_sync_log` writer; accounts sync
+    (`/v1/accounts` → `mm_accounts`, registered-type detection); Data Sync admin screen
+    with a "Sync now" button.
+  * **M2c:** `MM_FX` — Bank of Canada Valet client (`FXUSDCAD`), `mm_fx_rates`,
+    most-recent-prior-business-day lookup helper.
+  * **M2d:** activities sync — incremental (35-day overlap) + resumable month-by-month
+    backfill, deterministic dedup hash + upsert, US-Eastern→UTC normalisation, per-row
+    FX stamp. Scheduler: **WP-Cron** (twice daily) + always-available manual button +
+    documented real system cron. **Decision:** Action Scheduler is *not* bundled — revisit
+    only if WP-Cron proves unreliable in practice.
+  * **M2e (optional):** positions snapshots — `/v1/accounts/{id}/positions` →
+    `mm_positions_snapshots`, one dated snapshot per run. First thing to cut / defer to M3
+    under scope pressure; the table schema is created in M2a regardless.
 * **Milestone 3:** Frontend/admin dashboard — positions, pooled ACB, realized gains/losses,
   superficial-loss warnings, historical charts.
 
@@ -182,10 +198,12 @@ Follow these on every change so future sessions stay consistent.
   utilities with no hooks (e.g. `MM_Crypto`) are `require_once`d directly and have no
   `register()`.
 * Admin UI split: `MM_Admin` is the view + navigation layer (top-level "Money Maker" menu,
-  its Dashboard / Connection / Settings tabs, shared page chrome, asset enqueue, the
-  "Test connection" AJAX, and the shared notice transient). `MM_Settings` is storage +
-  `admin_post_*` form handlers only — it renders nothing. Handlers finish with
-  `MM_Admin::redirect_with_notices( $slug )`.
+  its Dashboard / Connection / Data Sync / Settings tabs, shared page chrome, asset
+  enqueue, the "Test connection" AJAX, and the shared notice transient). It renders every
+  screen. `admin_post_*` form handlers live with their feature: `MM_Settings` owns the
+  M1 settings/auth handlers (environment, crypto key, refresh token, clear token);
+  `MM_Sync` owns the M2 sync handlers (`mm_sync_run`, `mm_sync_backfill`). Every handler
+  finishes with `MM_Admin::redirect_with_notices( $slug )`.
 * PHP 8.0+. Type-hint parameters and returns where practical. `defined( 'ABSPATH' ) || exit;`
   at the top of every file.
 * Every DB read/write through `$wpdb->prepare()`. Options are `mm_*`; token/financial
@@ -211,10 +229,73 @@ Follow these on every change so future sessions stay consistent.
 
 ## 9. Current Status
 _Last updated: 2026-09-07 — keep this section current._
+* **Milestone 2 COMPLETE and merged to `main`.** Branch `milestone-2-sync` landed via
+  squash-merge, branch deleted, tagged `v0.2.0`. All of M2a–M2e manually tested and
+  confirmed working (schema, accounts/activities/positions/FX sync, dedup upsert, cron
+  scheduling, historical backfill, Data Sync admin screen). Next work starts from `main`
+  on a new `milestone-3-*` branch.
+  * **M2a — done.** `includes/class-mm-db.php`
+    (`MM_DB` — static utility, static `register()` adding one `admin_init` hook).
+    `DB_VERSION = '1'` stored in option `mm_db_version` (autoload no). `install()` runs
+    `dbDelta()` over six `CREATE TABLE`s (`wp_mm_{accounts, activities,
+    positions_snapshots, fx_rates, manual_adjustments, sync_log}`); `maybe_upgrade()`
+    re-runs it on `admin_init` when the stored version differs. `table('activities')`
+    → `wp_mm_activities` name helper; `is_installed()` / `drop_all()` helpers.
+    `money-maker.php`: require after client, `MM_DB::register()` in `mm_bootstrap`,
+    `MM_DB::install()` in `mm_activate`. `uninstall.php` requires the class and calls
+    `MM_DB::drop_all()` + deletes `mm_db_version`. Schema notes: `activities.dedup_hash`
+    `char(64)` UNIQUE is the upsert key; money columns stored native-currency with
+    `fx_rate` / `fx_rate_date` / `net_amount_cad` filled once FX resolves;
+    `manual_adjustments` is schema-only until M3.
+  * **M2b–M2e — done.** Six new classes, all
+    static utilities (no singletons), `require_once`d in `money-maker.php` between
+    `class-mm-db` and `class-mm-settings`:
+    * `MM_Accounts` (`class-mm-accounts.php`) — `mm_accounts` repo. `upsert()` from a
+      `/v1/accounts` entry; `is_registered_type()` (whitelist incl. spousal `S`-prefix
+      → registered; Cash/Margin → non-registered) drives the tax scope. `all()`,
+      `numbers()`, `non_registered_numbers()`, `count()`, `mask()` (last 4).
+    * `MM_FX` (`class-mm-fx.php`) — Bank of Canada Valet client, series `FXUSDCAD`
+      (`EARLIEST_DATE 2017-01-03`). `ensure_range($from,$to)` fetches one contiguous
+      span, upserts `mm_fx_rates`, records the fetched span in option `mm_fx_coverage`
+      (autoload no) so repeat calls skip the HTTP. `rate($base,$date)` → CAD-per-unit,
+      most-recent-prior-business-day fallback; `CAD` → 1.0. `latest_date()`, `count()`.
+    * `MM_Activities` (`class-mm-activities.php`) — `mm_activities` repo. `dedup_hash()`
+      = sha256 of account+settlementDate+action+symbol+qty(6dp)+price(6dp)+netAmount(6dp)
+      +currency (exactly the CLAUDE.md field list — `type` is stored but NOT hashed).
+      `upsert()` normalises (`transaction_at` → UTC via `DateTimeImmutable`; trade/
+      settlement kept as DATE), stamps FX (`fx_rate`=1 for CAD), SELECT-then-INSERT/
+      UPDATE on `dedup_hash`. `backfill_fx($limit=500)` prices rows left `fx_rate IS
+      NULL`. `count()`, `settlement_span()`.
+    * `MM_Positions` (`class-mm-positions.php`) — `mm_positions_snapshots`.
+      `store_snapshot($acct,$positions,$date)` deletes that account/day then inserts
+      (one row per symbol). `latest_date()`, `count()`. Not used by tax math.
+    * `MM_Sync_Log` (`class-mm-sync-log.php`) — `mm_sync_log` writer. `new_run_id()`,
+      `start()` → row id, `finish($id,$status,$seen,$affected,$msg)` (computes
+      duration), `recent($n)`, `last_for($endpoint)`, `prune($days=90)`.
+    * `MM_Sync` (`class-mm-sync.php`) — orchestrator + cron + admin-post handlers.
+      `ENDPOINTS = [accounts, fx, activities, positions]` (run order). `run($endpoints,
+      $trigger)` shares one `run_id`, logs each endpoint, fires `mm/sync/completed`,
+      prunes. Cron: `mm/sync/incremental` on `twicedaily` (`ensure_scheduled()` on
+      `init` + activation; `unschedule_all()` on deactivation) runs all endpoints
+      incrementally — activities window = last 35 days, chunked to 28-day calls
+      (`startTime`/`endTime` ISO-8601 in `America/Toronto`). Backfill:
+      `mm/sync/backfill` single events, self-rescheduling; `start_backfill($since)`
+      seeds per-account cursors in option `mm_sync_state` (autoload no);
+      `backfill_tick()` advances ≤6 monthly windows/tick across accounts, stall-guard
+      stops after 3 no-progress ticks (`stalled` flag). admin-post: `mm_sync_run`
+      (endpoint checkboxes, synchronous, per-endpoint notice), `mm_sync_backfill`
+      (`start` / `tick` / `cancel`).
+    * `MM_Questrade_Client::do_request()` — query values now `rawurlencode()`d before
+      `add_query_arg()` (which does not encode), so ISO timestamps survive.
+    * `MM_Admin` — new **Data Sync** tab/subpage (`mm-sync`, `SYNC_SLUG`): overview
+      (row counts, activity coverage span, next cron), "Sync now" form, backfill form,
+      recent-runs table. Dashboard's old "Milestone 2" preview card replaced by a live
+      `render_sync_card()`. `assets/admin.css` gains `.mm-check-group` / `.mm-log`.
+    * `uninstall.php` — deletes `mm_sync_state`, `mm_fx_coverage`, clears both cron
+      hooks (tables already dropped via `MM_DB::drop_all()`).
 * **Milestone 1 COMPLETE and merged to `main`.** PR #1 squash-merged as `daa3deb`,
   branch `milestone-1-auth` deleted, tagged `v0.1.0`. All of M1a–M1e manually tested and
-  confirmed working (incl. against a real Questrade practice account). Next work starts
-  from `main` on a new `milestone-2-sync` branch.
+  confirmed working (incl. against a real Questrade practice account).
   * **M1a — done, committed (`786be75`), manually tested.** Bootstrap wiring in
     `money-maker.php` (`mm_bootstrap`, activation seeds `mm_settings`, deactivation
     releases lock); `includes/class-mm-settings.php` (`MM_Settings` singleton — options
@@ -285,11 +366,19 @@ _Last updated: 2026-09-07 — keep this section current._
     private `mm_admin_notices` transient; `MM_Admin::render_notices()` prints and clears it
     inside the page chrome. No `settings_errors()` call anywhere.
 * Options in use: `mm_settings` = `{ environment }`; `mm_token_bundle` (encrypted bundle,
-  autoload no); `mm_token_lock` (refresh lock, autoload no).
+  autoload no); `mm_token_lock` (refresh lock, autoload no); `mm_db_version` (schema
+  version, autoload no); `mm_sync_state` (backfill cursors, autoload no); `mm_fx_coverage`
+  (fetched FX span, autoload no).
+* Cron events: `mm/sync/incremental` (`twicedaily`), `mm/sync/backfill` (single, self-
+  rescheduling). Cleared on deactivation + uninstall.
+* Custom tables (M2a): `wp_mm_{accounts, activities, positions_snapshots, fx_rates,
+  manual_adjustments, sync_log}`.
 * Out-of-DB files: `WP_CONTENT_DIR/mm-crypto-key.php` (key file, gitignored, `chmod 0600`,
   written from the Settings screen).
 * Plugin files: `money-maker.php` + `includes/class-mm-{crypto,lock,token-store,
-  questrade-client,settings,admin}.php` + `assets/{admin.css,admin.js}` + `uninstall.php`.
-* M1a–M1d manually tested and working. M1e (UI reorg) is code-only so far — needs a visual
-  pass in wp-admin.
+  questrade-client,db,accounts,fx,activities,positions,sync-log,sync,settings,admin}.php`
+  + `assets/{admin.css,admin.js}` + `uninstall.php`.
+* M1 and M2 fully manually tested and merged to `main`.
 * No dependencies, no Composer/npm, no CI, no tests (manual testing only — see §7).
+  **Action Scheduler deliberately not bundled** (see M2 sub-step list) — WP-Cron + manual
+  button + documented system cron instead.

@@ -262,7 +262,9 @@ final class MM_Questrade_Client {
 		$url = trailingslashit( $token['api_server'] ) . ltrim( $path, '/' );
 
 		if ( ! empty( $args['query'] ) && is_array( $args['query'] ) ) {
-			$url = add_query_arg( $args['query'], $url );
+			// add_query_arg() does not URL-encode values; pre-encode so reserved
+			// characters (e.g. the ':' and '+' in an ISO-8601 startTime) survive.
+			$url = add_query_arg( array_map( 'rawurlencode', $args['query'] ), $url );
 		}
 
 		$http_args = array(

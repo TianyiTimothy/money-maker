@@ -32,6 +32,7 @@ final class MM_Admin {
 
 	/** Subpage slugs. */
 	const CONNECTION_SLUG = 'mm-connection';
+	const SYNC_SLUG       = 'mm-sync';
 	const SETTINGS_SLUG   = 'mm-settings';
 
 	/** AJAX action for the "Test connection" button. */
@@ -108,6 +109,15 @@ final class MM_Admin {
 			self::CAPABILITY,
 			self::CONNECTION_SLUG,
 			array( $this, 'render_connection' )
+		);
+
+		$this->hooks['sync'] = (string) add_submenu_page(
+			self::MENU_SLUG,
+			__( 'Data Sync', 'money-maker' ),
+			__( 'Data Sync', 'money-maker' ),
+			self::CAPABILITY,
+			self::SYNC_SLUG,
+			array( $this, 'render_sync' )
 		);
 
 		$this->hooks['settings'] = (string) add_submenu_page(
@@ -199,7 +209,7 @@ final class MM_Admin {
 		$this->render_connection_card( $bundle, $environment );
 		$this->render_encryption_card();
 		$this->render_environment_card( $environment );
-		$this->render_next_card();
+		$this->render_sync_card();
 		echo '</div>';
 
 		$this->close();
@@ -303,6 +313,256 @@ final class MM_Admin {
 		$this->render_environment_form();
 		$this->render_encryption_form();
 		$this->close();
+	}
+
+	/**
+	 * Data Sync screen: coverage overview, "Sync now", historical backfill, and
+	 * the recent-runs log.
+	 */
+	public function render_sync(): void {
+		$this->guard();
+
+		$this->open( 'sync' );
+
+		if ( ! MM_DB::is_installed() ) {
+			echo '<div class="mm-inline-notice mm-inline-notice--bad">'
+				. esc_html__( 'The custom tables are missing. Deactivate and reactivate the plugin to create them.', 'money-maker' )
+				. '</div>';
+			$this->close();
+			return;
+		}
+
+		$this->render_sync_overview();
+		$this->render_sync_now_form();
+		$this->render_backfill_form();
+		$this->render_sync_log_table();
+
+		$this->close();
+	}
+
+	/* ---------------------------------------------------------------------
+	 * Data Sync building blocks
+	 * ------------------------------------------------------------------- */
+
+	/**
+	 * Row counts, activity date coverage, and the next scheduled run.
+	 */
+	private function render_sync_overview(): void {
+		$span      = MM_Activities::settlement_span();
+		$next_cron = MM_Sync::next_scheduled();
+		?>
+		<div class="mm-card">
+			<h2><?php esc_html_e( 'Overview', 'money-maker' ); ?></h2>
+			<div class="mm-keyval">
+				<div>
+					<span class="mm-keyval__k"><?php esc_html_e( 'Accounts', 'money-maker' ); ?></span>
+					<span class="mm-keyval__v"><?php echo esc_html( number_format_i18n( MM_Accounts::count() ) ); ?></span>
+				</div>
+				<div>
+					<span class="mm-keyval__k"><?php esc_html_e( 'Activities', 'money-maker' ); ?></span>
+					<span class="mm-keyval__v"><?php echo esc_html( number_format_i18n( MM_Activities::count() ) ); ?></span>
+				</div>
+				<div>
+					<span class="mm-keyval__k"><?php esc_html_e( 'FX rates', 'money-maker' ); ?></span>
+					<span class="mm-keyval__v"><?php echo esc_html( number_format_i18n( MM_FX::count() ) ); ?></span>
+				</div>
+				<div>
+					<span class="mm-keyval__k"><?php esc_html_e( 'Position rows', 'money-maker' ); ?></span>
+					<span class="mm-keyval__v"><?php echo esc_html( number_format_i18n( MM_Positions::count() ) ); ?></span>
+				</div>
+				<div>
+					<span class="mm-keyval__k"><?php esc_html_e( 'Activity coverage', 'money-maker' ); ?></span>
+					<span class="mm-keyval__v">
+						<?php
+						echo $span['min'] && $span['max']
+							? esc_html( $span['min'] . '  →  ' . $span['max'] )
+							: esc_html__( 'nothing stored yet', 'money-maker' );
+						?>
+					</span>
+				</div>
+				<div>
+					<span class="mm-keyval__k"><?php esc_html_e( 'Next scheduled run', 'money-maker' ); ?></span>
+					<span class="mm-keyval__v">
+						<?php
+						echo $next_cron
+							? esc_html( sprintf(
+								/* translators: %s: human time diff */
+								__( 'in %s (WP-Cron)', 'money-maker' ),
+								human_time_diff( time(), $next_cron )
+							) )
+							: esc_html__( 'not scheduled', 'money-maker' );
+						?>
+					</span>
+				</div>
+			</div>
+			<p class="mm-muted">
+				<?php esc_html_e( 'WP-Cron only fires when the site gets traffic. For reliable scheduled syncs, point a real system cron at wp-cron.php (see the plugin README).', 'money-maker' ); ?>
+			</p>
+		</div>
+		<?php
+	}
+
+	/**
+	 * "Sync now" — pick endpoints, run synchronously.
+	 */
+	private function render_sync_now_form(): void {
+		$labels = array(
+			'accounts'   => __( 'Accounts', 'money-maker' ),
+			'fx'         => __( 'FX rates', 'money-maker' ),
+			'activities' => __( 'Activities (last 35 days)', 'money-maker' ),
+			'positions'  => __( 'Positions snapshot', 'money-maker' ),
+		);
+		?>
+		<div class="mm-card">
+			<h2><?php esc_html_e( 'Sync now', 'money-maker' ); ?></h2>
+			<p class="mm-muted">
+				<?php esc_html_e( 'Runs immediately and may take up to a minute. Activities are re-pulled for the last 35 days and de-duplicated on write.', 'money-maker' ); ?>
+			</p>
+			<form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>" class="mm-form">
+				<input type="hidden" name="action" value="<?php echo esc_attr( MM_Sync::ACTION_RUN ); ?>" />
+				<?php wp_nonce_field( MM_Sync::ACTION_RUN ); ?>
+				<fieldset class="mm-check-group">
+					<?php foreach ( $labels as $key => $label ) : ?>
+						<label class="mm-check">
+							<input type="checkbox" name="mm_endpoints[]" value="<?php echo esc_attr( $key ); ?>" checked />
+							<span><?php echo esc_html( $label ); ?></span>
+						</label>
+					<?php endforeach; ?>
+				</fieldset>
+				<?php submit_button( __( 'Sync now', 'money-maker' ) ); ?>
+			</form>
+		</div>
+		<?php
+	}
+
+	/**
+	 * Historical backfill control.
+	 */
+	private function render_backfill_form(): void {
+		$status  = MM_Sync::backfill_status();
+		$default = gmdate( 'Y-m-d', strtotime( '-3 years' ) );
+		?>
+		<div class="mm-card">
+			<h2><?php esc_html_e( 'Historical backfill', 'money-maker' ); ?></h2>
+
+			<?php if ( ! $status['active'] ) : ?>
+				<p class="mm-muted">
+					<?php esc_html_e( 'Walk activities month-by-month back to a start date. Runs in the background in small steps so no single request times out.', 'money-maker' ); ?>
+				</p>
+				<form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>" class="mm-form">
+					<input type="hidden" name="action" value="<?php echo esc_attr( MM_Sync::ACTION_BACKFILL ); ?>" />
+					<input type="hidden" name="mm_backfill_op" value="start" />
+					<?php wp_nonce_field( MM_Sync::ACTION_BACKFILL ); ?>
+					<div class="mm-field">
+						<label for="mm_backfill_since"><?php esc_html_e( 'Start date', 'money-maker' ); ?></label>
+						<input type="date" id="mm_backfill_since" name="mm_backfill_since" value="<?php echo esc_attr( $default ); ?>" required />
+						<p class="mm-muted"><?php esc_html_e( 'Questrade only serves activities for open accounts; earlier data may be unavailable.', 'money-maker' ); ?></p>
+					</div>
+					<?php submit_button( __( 'Start backfill', 'money-maker' ), 'secondary' ); ?>
+				</form>
+			<?php else : ?>
+				<div class="mm-keyval">
+					<div>
+						<span class="mm-keyval__k"><?php esc_html_e( 'Started from', 'money-maker' ); ?></span>
+						<span class="mm-keyval__v"><?php echo esc_html( (string) $status['since'] ); ?></span>
+					</div>
+					<div>
+						<span class="mm-keyval__k"><?php esc_html_e( 'Progress', 'money-maker' ); ?></span>
+						<span class="mm-keyval__v">
+							<?php
+							if ( ! empty( $status['stalled'] ) ) {
+								echo '<span class="mm-pill mm-pill--warn">' . esc_html__( 'Stopped early', 'money-maker' ) . '</span> ';
+								esc_html_e( 'an account kept erroring — see the log below.', 'money-maker' );
+							} elseif ( $status['complete'] ) {
+								echo '<span class="mm-pill mm-pill--ok">' . esc_html__( 'Complete', 'money-maker' ) . '</span>';
+							} else {
+								echo esc_html( sprintf(
+									/* translators: %s: date the backfill has reached */
+									__( 'working forward from %s', 'money-maker' ),
+									(string) $status['frontier']
+								) );
+							}
+							?>
+						</span>
+					</div>
+					<div>
+						<span class="mm-keyval__k"><?php esc_html_e( 'Rows written', 'money-maker' ); ?></span>
+						<span class="mm-keyval__v"><?php echo esc_html( number_format_i18n( $status['rows_total'] ) ); ?></span>
+					</div>
+				</div>
+				<p class="mm-actions">
+					<?php if ( ! $status['complete'] ) : ?>
+						<form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>" style="display:inline">
+							<input type="hidden" name="action" value="<?php echo esc_attr( MM_Sync::ACTION_BACKFILL ); ?>" />
+							<input type="hidden" name="mm_backfill_op" value="tick" />
+							<?php wp_nonce_field( MM_Sync::ACTION_BACKFILL ); ?>
+							<?php submit_button( __( 'Run a backfill step now', 'money-maker' ), 'secondary', 'submit', false ); ?>
+						</form>
+					<?php endif; ?>
+					<form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>" style="display:inline"
+						onsubmit="return window.confirm( '<?php echo esc_js( __( 'Cancel the backfill and clear its progress?', 'money-maker' ) ); ?>' );">
+						<input type="hidden" name="action" value="<?php echo esc_attr( MM_Sync::ACTION_BACKFILL ); ?>" />
+						<input type="hidden" name="mm_backfill_op" value="cancel" />
+						<?php wp_nonce_field( MM_Sync::ACTION_BACKFILL ); ?>
+						<?php submit_button( __( 'Cancel backfill', 'money-maker' ), 'link-delete', 'submit', false ); ?>
+					</form>
+				</p>
+			<?php endif; ?>
+		</div>
+		<?php
+	}
+
+	/**
+	 * The last ~20 sync-log rows.
+	 */
+	private function render_sync_log_table(): void {
+		$rows = MM_Sync_Log::recent( 20 );
+		?>
+		<div class="mm-card">
+			<h2><?php esc_html_e( 'Recent runs', 'money-maker' ); ?></h2>
+			<?php if ( empty( $rows ) ) : ?>
+				<p class="mm-muted"><?php esc_html_e( 'No sync has run yet.', 'money-maker' ); ?></p>
+			<?php else : ?>
+				<table class="widefat striped mm-log">
+					<thead>
+						<tr>
+							<th><?php esc_html_e( 'When', 'money-maker' ); ?></th>
+							<th><?php esc_html_e( 'Endpoint', 'money-maker' ); ?></th>
+							<th><?php esc_html_e( 'Scope', 'money-maker' ); ?></th>
+							<th><?php esc_html_e( 'Range', 'money-maker' ); ?></th>
+							<th><?php esc_html_e( 'Status', 'money-maker' ); ?></th>
+							<th><?php esc_html_e( 'Rows', 'money-maker' ); ?></th>
+							<th><?php esc_html_e( 'Detail', 'money-maker' ); ?></th>
+						</tr>
+					</thead>
+					<tbody>
+						<?php foreach ( $rows as $row ) : ?>
+							<?php
+							$tone = 'ok' === $row['status'] ? 'ok' : ( in_array( $row['status'], array( 'error', 'partial' ), true ) ? 'bad' : 'muted' );
+							$when = ! empty( $row['started_at'] ) ? strtotime( $row['started_at'] . ' UTC' ) : 0;
+							?>
+							<tr>
+								<td><?php echo $when ? esc_html( human_time_diff( $when, time() ) . ' ' . __( 'ago', 'money-maker' ) ) : '&mdash;'; ?></td>
+								<td><?php echo esc_html( (string) $row['endpoint'] ); ?></td>
+								<td><?php echo esc_html( (string) $row['scope'] ); ?></td>
+								<td>
+									<?php
+									echo $row['range_start'] && $row['range_end']
+										? esc_html( $row['range_start'] . '…' . $row['range_end'] )
+										: '&mdash;';
+									?>
+								</td>
+								<td><span class="mm-pill mm-pill--<?php echo esc_attr( $tone ); ?>"><?php echo esc_html( (string) $row['status'] ); ?></span></td>
+								<td><?php echo esc_html( $row['rows_seen'] . ' / ' . $row['rows_affected'] ); ?></td>
+								<td class="mm-log__detail"><?php echo esc_html( (string) $row['message'] ); ?></td>
+							</tr>
+						<?php endforeach; ?>
+					</tbody>
+				</table>
+				<p class="mm-muted"><?php esc_html_e( 'Rows shown as seen / written. Log rows older than 90 days are pruned automatically.', 'money-maker' ); ?></p>
+			<?php endif; ?>
+		</div>
+		<?php
 	}
 
 	/* ---------------------------------------------------------------------
@@ -514,18 +774,43 @@ final class MM_Admin {
 	}
 
 	/**
-	 * Dashboard card previewing the next milestone.
+	 * Dashboard card summarising data-sync health.
 	 */
-	private function render_next_card(): void {
+	private function render_sync_card(): void {
+		$installed      = MM_DB::is_installed();
+		$last           = $installed ? MM_Sync_Log::last_for( 'activities' ) : null;
+		$activity_count = $installed ? MM_Activities::count() : 0;
+
+		if ( ! $installed ) {
+			$pill = array( 'bad', __( 'No tables', 'money-maker' ) );
+		} elseif ( null === $last ) {
+			$pill = array( 'warn', __( 'Never synced', 'money-maker' ) );
+		} elseif ( 'error' === $last['status'] ) {
+			$pill = array( 'warn', __( 'Last run failed', 'money-maker' ) );
+		} else {
+			$pill = array( 'ok', __( 'Synced', 'money-maker' ) );
+		}
 		?>
-		<div class="mm-card mm-card--soon">
+		<div class="mm-card mm-card--link">
 			<div class="mm-card__head">
 				<h3><?php esc_html_e( 'Data sync', 'money-maker' ); ?></h3>
-				<span class="mm-pill mm-pill--muted"><?php esc_html_e( 'Milestone 2', 'money-maker' ); ?></span>
+				<span class="mm-pill mm-pill--<?php echo esc_attr( $pill[0] ); ?>"><?php echo esc_html( $pill[1] ); ?></span>
 			</div>
 			<p class="mm-muted">
-				<?php esc_html_e( 'Accounts, positions and activities pulled into local tables, with pooled ACB and superficial-loss warnings to follow.', 'money-maker' ); ?>
+				<?php
+				if ( null !== $last && ! empty( $last['finished_at'] ) ) {
+					printf(
+						/* translators: 1: activity row count, 2: human time diff */
+						esc_html__( '%1$s activities stored · last run %2$s ago', 'money-maker' ),
+						esc_html( number_format_i18n( $activity_count ) ),
+						esc_html( human_time_diff( strtotime( $last['finished_at'] ), time() ) )
+					);
+				} else {
+					esc_html_e( 'Pull accounts, activities and FX rates into local tables.', 'money-maker' );
+				}
+				?>
 			</p>
+			<a href="<?php echo esc_url( self::page_url( self::SYNC_SLUG ) ); ?>"><?php esc_html_e( 'Open Data Sync →', 'money-maker' ); ?></a>
 		</div>
 		<?php
 	}
@@ -846,6 +1131,7 @@ final class MM_Admin {
 		$tabs        = array(
 			'dashboard'  => array( __( 'Dashboard', 'money-maker' ), self::MENU_SLUG ),
 			'connection' => array( __( 'Connection', 'money-maker' ), self::CONNECTION_SLUG ),
+			'sync'       => array( __( 'Data Sync', 'money-maker' ), self::SYNC_SLUG ),
 			'settings'   => array( __( 'Settings', 'money-maker' ), self::SETTINGS_SLUG ),
 		);
 		?>

@@ -325,6 +325,29 @@
 
 .mm-app .mm-history li:last-child { border-bottom: 0; }
 
+/* checkbox group (Data Sync "Sync now") */
+.mm-app .mm-check-group {
+	display: grid;
+	grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+	gap: 8px 16px;
+	margin: 14px 0;
+	border: 0;
+	padding: 0;
+}
+
+.mm-app .mm-check {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	font-size: 13px;
+}
+
+/* sync log table */
+.mm-app .mm-log { margin: 12px 0; }
+.mm-app .mm-log th { font-size: 12px; }
+.mm-app .mm-log td { font-size: 12px; vertical-align: top; }
+.mm-app .mm-log__detail { color: var(--mm-muted); max-width: 32ch; }
+
 @media (prefers-reduced-motion: reduce) {
 	.mm-app * { transition: none !important; }
 }
