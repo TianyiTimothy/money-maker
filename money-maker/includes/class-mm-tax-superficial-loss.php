@@ -13,6 +13,11 @@
  * accounts) are out of automated scope — every result says "review with your
  * accountant".
  *
+ * Option dispositions (asset_class 'option', M3f) are skipped. The rule turns on
+ * re-acquiring *identical property*, and an option series is its own property —
+ * matching a written contract against a share purchase would be wrong, and
+ * matching contract against contract needs same-series logic this does not have.
+ *
  * Static utility: no register(). Required directly by money-maker.php.
  *
  * @package MoneyMaker
@@ -34,7 +39,7 @@ final class MM_Tax_Superficial_Loss {
 	/** Fixed reviewer caveat appended to every warning. */
 	public static function disclaimer(): string {
 		return __(
-			'Mechanical check only: purchases by an affiliated person — a spouse, or your own registered (TFSA/RRSP) accounts — are not detected and would also deny the loss. Confirm every superficial-loss result with your accountant.',
+			'Mechanical check only: purchases by an affiliated person — a spouse, or your own registered (TFSA/RRSP) accounts — are not detected and would also deny the loss. Losses on option contracts are not scanned at all. Confirm every superficial-loss result with your accountant.',
 			'money-maker'
 		);
 	}
@@ -52,6 +57,11 @@ final class MM_Tax_Superficial_Loss {
 
 		foreach ( $acb_result['dispositions'] as $disposition ) {
 			if ( (float) $disposition['gain'] >= 0 ) {
+				continue;
+			}
+
+			// Options are their own property class — see the class docblock.
+			if ( 'option' === ( $disposition['asset_class'] ?? 'stock' ) ) {
 				continue;
 			}
 
@@ -145,9 +155,7 @@ final class MM_Tax_Superficial_Loss {
 			foreach ( MM_Activities::for_acb( $account, $symbol ) as $row ) {
 				$class = MM_Tax_ACB::classify( $row );
 				$qty   = abs( (float) $row['quantity'] );
-				$date  = ! empty( $row['settlement_date'] )
-					? substr( (string) $row['settlement_date'], 0, 10 )
-					: ( ! empty( $row['trade_date'] ) ? substr( (string) $row['trade_date'], 0, 10 ) : substr( (string) $row['transaction_at'], 0, 10 ) );
+				$date  = MM_Activities::row_date( $row );
 
 				if ( 'buy' === $class ) {
 					$entries[] = array( 'date' => $date, 'signed_qty' => $qty, 'qty' => $qty, 'acquisition' => true );
