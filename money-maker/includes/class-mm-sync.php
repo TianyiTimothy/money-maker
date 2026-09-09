@@ -46,8 +46,18 @@ final class MM_Sync {
 	/** Per-request activities window. Questrade caps each call at ~31 days. */
 	const ACTIVITY_CHUNK_DAYS = 28;
 
-	/** Monthly windows a single backfill tick will pull before rescheduling. */
+	/** Monthly windows one unattended (cron) backfill tick pulls before rescheduling. */
 	const BACKFILL_WINDOWS_PER_TICK = 6;
+
+	/**
+	 * Monthly windows one *manual* tick pulls. Higher than the cron budget because
+	 * a person is sitting there watching it: a decade of history across a few
+	 * accounts is ~300 windows, and 6 at a time means 50 clicks.
+	 */
+	const BACKFILL_MANUAL_WINDOWS = 30;
+
+	/** Wall-clock ceiling for a single tick, whatever the window budget says. */
+	const BACKFILL_MAX_SECONDS = 40;
 
 	/** Give up (and stop rescheduling) after this many ticks make no progress. */
 	const BACKFILL_MAX_STALLED_TICKS = 3;
@@ -173,6 +183,21 @@ final class MM_Sync {
 			MM_Admin::redirect_with_notices( MM_Admin::SYNC_SLUG );
 		}
 
+		if ( 'resume' === $op ) {
+			if ( self::resume_backfill() ) {
+				add_settings_error(
+					'mm_sync',
+					'mm_backfill_resumed',
+					__( 'Blocked accounts cleared. The backfill will pick up from where each account stopped.', 'money-maker' ),
+					'updated'
+				);
+			} else {
+				add_settings_error( 'mm_sync', 'mm_backfill_none', __( 'No backfill is in progress.', 'money-maker' ), 'info' );
+			}
+
+			MM_Admin::redirect_with_notices( MM_Admin::SYNC_SLUG );
+		}
+
 		if ( 'start' === $op ) {
 			$since  = isset( $_POST['mm_backfill_since'] ) ? sanitize_text_field( wp_unslash( $_POST['mm_backfill_since'] ) ) : '';
 			$result = self::start_backfill( $since );
@@ -195,8 +220,8 @@ final class MM_Sync {
 			MM_Admin::redirect_with_notices( MM_Admin::SYNC_SLUG );
 		}
 
-		// Default: run one tick now.
-		$status = self::backfill_tick();
+		// Default: run one tick now, with the larger manual budget.
+		$status = self::backfill_tick( self::BACKFILL_MANUAL_WINDOWS );
 
 		if ( is_wp_error( $status ) ) {
 			add_settings_error( 'mm_sync', $status->get_error_code(), $status->get_error_message(), 'error' );
@@ -220,6 +245,22 @@ final class MM_Sync {
 					),
 				$status['complete'] ? 'updated' : 'info'
 			);
+
+			// Surface the real Questrade error text straight on the screen — the
+			// sync log holds it too, but ordinary syncs push it out of view fast.
+			foreach ( (array) $status['errors'] as $account => $message ) {
+				add_settings_error(
+					'mm_sync',
+					'mm_backfill_err_' . md5( (string) $account ),
+					sprintf(
+						/* translators: 1: masked account number, 2: error detail */
+						__( 'Backfill error on account %1$s — %2$s', 'money-maker' ),
+						MM_Accounts::mask( (string) $account ),
+						$message
+					),
+					'error'
+				);
+			}
 		}
 
 		MM_Admin::redirect_with_notices( MM_Admin::SYNC_SLUG );
@@ -533,6 +574,10 @@ final class MM_Sync {
 			'stalled'     => false,
 			'stall_ticks' => 0,
 			'rows_total'  => 0,
+			'windows'     => 0,
+			'errors'      => array(),
+			'fails'       => array(),
+			'blocked'     => array(),
 		);
 		self::put_state( $state );
 
@@ -553,12 +598,54 @@ final class MM_Sync {
 	}
 
 	/**
+	 * Un-block every account the backfill gave up on and let it resume from the
+	 * cursors it already reached. Used by the "Retry blocked accounts" button
+	 * after the underlying cause (a permission, a closed account, an outage) has
+	 * been dealt with.
+	 *
+	 * @return bool Whether there was a backfill to resume.
+	 */
+	public static function resume_backfill(): bool {
+		$state = self::get_state();
+
+		if ( empty( $state['backfill'] ) ) {
+			return false;
+		}
+
+		$state['backfill']['blocked']     = array();
+		$state['backfill']['fails']       = array();
+		$state['backfill']['errors']      = array();
+		$state['backfill']['stalled']     = false;
+		$state['backfill']['stall_ticks'] = 0;
+		$state['backfill']['complete']    = false;
+		$state['backfill']['updated_at']  = time();
+		self::put_state( $state );
+
+		if ( ! wp_next_scheduled( self::CRON_BACKFILL ) ) {
+			wp_schedule_single_event( time() + MINUTE_IN_SECONDS, self::CRON_BACKFILL );
+		}
+
+		return true;
+	}
+
+	/**
 	 * Advance the backfill by up to BACKFILL_WINDOWS_PER_TICK monthly windows,
 	 * spread across accounts.
 	 *
-	 * @return array{active:bool,complete:bool,rows_affected:int,frontier:?string}|WP_Error
+	 * One account failing must never take the others down with it: a window that
+	 * errors records the message against that account and the walk moves on to the
+	 * next account. After BACKFILL_MAX_STALLED_TICKS consecutive failures that
+	 * account is marked *blocked* and skipped entirely, so the rest of the book
+	 * still completes and the screen can name exactly what is broken.
+	 *
+	 * Progress is persisted after every window rather than once at the end of the
+	 * tick, so a request that dies mid-tick (PHP timeout, fatal, dropped cron)
+	 * keeps the windows it had already pulled.
+	 *
+	 * @param int $max_windows Window budget for this tick; 0 uses the cron budget.
+	 * @return array{active:bool,complete:bool,stalled:bool,rows_affected:int,frontier:?string,errors:array<string,string>}
 	 */
-	public static function backfill_tick() {
+	public static function backfill_tick( int $max_windows = 0 ) {
 		self::relax_limits();
 
 		$state = self::get_state();
@@ -567,76 +654,112 @@ final class MM_Sync {
 			return array(
 				'active'        => ! empty( $state['backfill'] ),
 				'complete'      => ! empty( $state['backfill']['complete'] ),
+				'stalled'       => ! empty( $state['backfill']['stalled'] ),
 				'rows_affected' => 0,
 				'frontier'      => null,
+				'errors'        => array(),
 			);
 		}
 
-		$backfill = $state['backfill'];
+		$backfill            = $state['backfill'];
+		$backfill['cursor']  = isset( $backfill['cursor'] ) && is_array( $backfill['cursor'] ) ? $backfill['cursor'] : array();
+		$backfill['blocked'] = isset( $backfill['blocked'] ) && is_array( $backfill['blocked'] ) ? $backfill['blocked'] : array();
+		$backfill['fails']   = isset( $backfill['fails'] ) && is_array( $backfill['fails'] ) ? $backfill['fails'] : array();
+		$backfill['errors']  = array();
+
 		$today    = gmdate( 'Y-m-d' );
 		$run_id   = MM_Sync_Log::new_run_id();
-		$budget   = self::BACKFILL_WINDOWS_PER_TICK;
+		$budget   = $max_windows > 0 ? $max_windows : self::BACKFILL_WINDOWS_PER_TICK;
+		$deadline = time() + self::BACKFILL_MAX_SECONDS;
 		$affected = 0;
-
-		$frontier_before = min( $backfill['cursor'] );
+		$moved    = false;
 
 		// Fetch FX once for the whole outstanding span.
-		MM_FX::ensure_range( $frontier_before, $today );
+		$outstanding = self::frontier( $backfill );
+		MM_FX::ensure_range( $outstanding ? $outstanding : $today, $today );
 
-		foreach ( $backfill['cursor'] as $account => $from ) {
-			while ( $budget > 0 && $from < $today ) {
-				$to = gmdate( 'Y-m-d', min( strtotime( $today ), strtotime( $from . ' +1 month -1 day' ) ) );
+		foreach ( array_keys( $backfill['cursor'] ) as $account ) {
+			if ( $budget <= 0 || time() >= $deadline ) {
+				break;
+			}
+			if ( ! empty( $backfill['blocked'][ $account ] ) ) {
+				continue;
+			}
+
+			while ( $budget > 0 && time() < $deadline && (string) $backfill['cursor'][ $account ] < $today ) {
+				$from = (string) $backfill['cursor'][ $account ];
+				$to   = gmdate( 'Y-m-d', min( strtotime( $today ), strtotime( $from . ' +1 month -1 day' ) ) );
 
 				$log    = MM_Sync_Log::start( $run_id, 'activities', MM_Accounts::mask( (string) $account ) . ' (backfill)', $from, $to );
 				$result = self::pull_activities_window( (string) $account, $from, $to );
+				--$budget;
 
 				if ( is_wp_error( $result ) ) {
-					MM_Sync_Log::finish( $log, 'error', 0, 0, $result->get_error_message() );
-					// Stop this account for now; try again next tick from the same cursor.
-					$budget = 0;
+					$message = $result->get_error_message();
+					MM_Sync_Log::finish( $log, 'error', 0, 0, $message );
+
+					$fails                          = (int) ( isset( $backfill['fails'][ $account ] ) ? $backfill['fails'][ $account ] : 0 ) + 1;
+					$backfill['fails'][ $account ]  = $fails;
+					$backfill['errors'][ $account ] = $message;
+
+					if ( $fails >= self::BACKFILL_MAX_STALLED_TICKS ) {
+						$backfill['blocked'][ $account ] = $message;
+					}
+
+					// Leave this account's cursor where it is and carry on with the
+					// next account — one broken account must not stop the others.
+					$backfill['updated_at'] = time();
+					$state['backfill']      = $backfill;
+					self::put_state( $state );
 					break;
 				}
 
 				MM_Sync_Log::finish( $log, 'ok', $result['seen'], $result['affected'], sprintf( '%d seen, %d written', $result['seen'], $result['affected'] ) );
+
 				$affected += $result['affected'];
+				$moved     = true;
 
-				$from = gmdate( 'Y-m-d', strtotime( $to . ' +1 day' ) );
-				$backfill['cursor'][ $account ] = $from;
-				--$budget;
-			}
+				$backfill['cursor'][ $account ] = gmdate( 'Y-m-d', strtotime( $to . ' +1 day' ) );
+				$backfill['fails'][ $account ]  = 0;
+				$backfill['rows_total']         = (int) ( isset( $backfill['rows_total'] ) ? $backfill['rows_total'] : 0 ) + $result['affected'];
+				$backfill['windows']            = (int) ( isset( $backfill['windows'] ) ? $backfill['windows'] : 0 ) + 1;
+				$backfill['updated_at']         = time();
 
-			if ( $budget <= 0 ) {
-				break;
+				// Persist every window: a request that dies here keeps its progress.
+				$state['backfill'] = $backfill;
+				self::put_state( $state );
 			}
 		}
 
-		// Complete when every cursor has reached today.
+		// Complete when every account still in play has reached today. Blocked
+		// accounts do not hold the run open — they are reported instead.
 		$complete = true;
-		foreach ( $backfill['cursor'] as $cursor_date ) {
-			if ( $cursor_date < $today ) {
+		foreach ( $backfill['cursor'] as $account => $cursor_date ) {
+			if ( ! empty( $backfill['blocked'][ $account ] ) ) {
+				continue;
+			}
+			if ( (string) $cursor_date < $today ) {
 				$complete = false;
 				break;
 			}
 		}
 
-		// Stall guard: if the frontier did not move (an account is stuck erroring),
-		// stop after a few ticks rather than rescheduling cron forever.
-		$frontier_after = min( $backfill['cursor'] );
-		$stalled        = false;
-		if ( ! $complete && $frontier_after === $frontier_before ) {
-			$backfill['stall_ticks'] = (int) ( $backfill['stall_ticks'] ?? 0 ) + 1;
+		// Stall guard: nothing anywhere advanced this tick. Stop rescheduling
+		// rather than spinning cron forever.
+		$stalled = ! empty( $backfill['stalled'] );
+		if ( ! $complete && ! $moved ) {
+			$backfill['stall_ticks'] = (int) ( isset( $backfill['stall_ticks'] ) ? $backfill['stall_ticks'] : 0 ) + 1;
 			if ( $backfill['stall_ticks'] >= self::BACKFILL_MAX_STALLED_TICKS ) {
 				$stalled  = true;
 				$complete = true;
 			}
-		} else {
+		} elseif ( $moved ) {
 			$backfill['stall_ticks'] = 0;
 		}
 
 		$backfill['updated_at'] = time();
 		$backfill['complete']   = $complete;
 		$backfill['stalled']    = $stalled;
-		$backfill['rows_total'] = (int) $backfill['rows_total'] + $affected;
 		$state['backfill']      = $backfill;
 		self::put_state( $state );
 
@@ -645,14 +768,15 @@ final class MM_Sync {
 			'complete'      => $complete,
 			'stalled'       => $stalled,
 			'rows_affected' => $affected,
-			'frontier'      => $complete ? null : $frontier_after,
+			'frontier'      => $complete ? null : self::frontier( $backfill ),
+			'errors'        => $backfill['errors'],
 		);
 	}
 
 	/**
 	 * Current backfill progress for the admin screen.
 	 *
-	 * @return array{active:bool,complete:bool,since:?string,frontier:?string,rows_total:int,updated_at:?int}
+	 * @return array<string,mixed>
 	 */
 	public static function backfill_status(): array {
 		$state = self::get_state();
@@ -665,21 +789,81 @@ final class MM_Sync {
 				'since'      => null,
 				'frontier'   => null,
 				'rows_total' => 0,
+				'windows'    => 0,
 				'updated_at' => null,
+				'accounts'   => array(),
+				'blocked'    => array(),
+				'errors'     => array(),
 			);
 		}
 
 		$backfill = $state['backfill'];
+		$today    = gmdate( 'Y-m-d' );
+		$cursors  = isset( $backfill['cursor'] ) && is_array( $backfill['cursor'] ) ? $backfill['cursor'] : array();
+		$accounts = array();
+		$blocked  = array();
+		$errors   = array();
+
+		foreach ( $cursors as $account => $cursor_date ) {
+			$mask     = MM_Accounts::mask( (string) $account );
+			$is_block = ! empty( $backfill['blocked'][ $account ] );
+			$problem  = (string) ( $is_block
+				? $backfill['blocked'][ $account ]
+				: ( isset( $backfill['errors'][ $account ] ) ? $backfill['errors'][ $account ] : '' ) );
+
+			$accounts[] = array(
+				'account' => $mask,
+				'cursor'  => (string) $cursor_date,
+				'done'    => (string) $cursor_date >= $today,
+				'blocked' => $is_block,
+				'error'   => $problem,
+			);
+
+			if ( $is_block ) {
+				$blocked[ $mask ] = $problem;
+			} elseif ( '' !== $problem ) {
+				$errors[ $mask ] = $problem;
+			}
+		}
 
 		return array(
 			'active'     => true,
 			'complete'   => ! empty( $backfill['complete'] ),
 			'stalled'    => ! empty( $backfill['stalled'] ),
-			'since'      => $backfill['since'] ?? null,
-			'frontier'   => ! empty( $backfill['cursor'] ) ? min( $backfill['cursor'] ) : null,
-			'rows_total' => (int) ( $backfill['rows_total'] ?? 0 ),
+			'since'      => isset( $backfill['since'] ) ? $backfill['since'] : null,
+			'frontier'   => self::frontier( $backfill ),
+			'rows_total' => (int) ( isset( $backfill['rows_total'] ) ? $backfill['rows_total'] : 0 ),
+			'windows'    => (int) ( isset( $backfill['windows'] ) ? $backfill['windows'] : 0 ),
 			'updated_at' => isset( $backfill['updated_at'] ) ? (int) $backfill['updated_at'] : null,
+			'accounts'   => $accounts,
+			'blocked'    => $blocked,
+			'errors'     => $errors,
 		);
+	}
+
+	/**
+	 * The earliest date the backfill still has to pull, ignoring blocked accounts
+	 * (they are never going to move, so they must not pin the frontier).
+	 *
+	 * @param array $backfill Backfill state.
+	 */
+	private static function frontier( array $backfill ): ?string {
+		$cursors = isset( $backfill['cursor'] ) && is_array( $backfill['cursor'] ) ? $backfill['cursor'] : array();
+		$blocked = isset( $backfill['blocked'] ) && is_array( $backfill['blocked'] ) ? $backfill['blocked'] : array();
+		$dates   = array();
+
+		foreach ( $cursors as $account => $date ) {
+			if ( ! empty( $blocked[ $account ] ) ) {
+				continue;
+			}
+			$dates[] = (string) $date;
+		}
+
+		if ( empty( $dates ) ) {
+			$dates = array_map( 'strval', array_values( $cursors ) );
+		}
+
+		return empty( $dates ) ? null : min( $dates );
 	}
 
 	/* ------------------------------------------------------------------ *
