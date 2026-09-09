@@ -8,7 +8,8 @@
  *     type: 'line' | 'bar',
  *     points: [ { x: 'YYYY-MM-DD', y: Number }, ... ]   // line
  *     bars:   [ { label: String, value: Number }, ... ] // bar
- *     unit:   '$'  (optional prefix for value labels)
+ *     unit:   'US$' (optional currency prefix for value labels; the minus sign
+ *                   is placed before it, not after)
  *   }
  */
 ( function () {
@@ -34,8 +35,10 @@
 
 	function money( value, unit ) {
 		var rounded = Math.round( value * 100 ) / 100;
-		var str = rounded.toLocaleString( undefined, { minimumFractionDigits: 0, maximumFractionDigits: 2 } );
-		return ( unit || '' ) + str;
+		var str = Math.abs( rounded ).toLocaleString( undefined, { minimumFractionDigits: 0, maximumFractionDigits: 2 } );
+		// Sign outside the symbol: "-C$1,350", not "C$-1,350". Barely mattered
+		// while the unit was a bare "$"; it reads wrong with a currency prefix.
+		return ( rounded < 0 ? '-' : '' ) + ( unit || '' ) + str;
 	}
 
 	function niceTicks( min, max, count ) {
