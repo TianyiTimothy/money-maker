@@ -26,8 +26,9 @@ wp_clear_scheduled_hook( 'mm/sync/backfill' );
 require_once __DIR__ . '/includes/class-mm-db.php';
 MM_DB::drop_all();
 
-// Transient carrying admin notices across redirects.
-delete_transient( 'mm_admin_notices' );
+// Transients.
+delete_transient( 'mm_admin_notices' ); // Admin notices across redirects.
+delete_transient( 'mm_acb_cache' );     // M3b: cached pooled-ACB computation.
 
 // Out-of-database crypto key file (M1b). Kept in sync with
 // MM_Crypto::KEY_FILENAME / MM_Crypto::key_file_path(). Not removed when the

@@ -203,6 +203,9 @@
 
 .mm-app .mm-card--soon { background: #fafafa; border-style: dashed; }
 .mm-app .mm-card--danger { border-color: #f0b8b8; }
+.mm-app .mm-card--warn { border-color: #e0c087; background: #fffaf0; }
+.mm-app .mm-card--warn ul { margin: 8px 0 12px; padding-left: 18px; list-style: disc; }
+.mm-app .mm-card--warn li { margin-bottom: 6px; }
 
 /* ---- pills -------------------------------------------------------- */
 
@@ -347,6 +350,212 @@
 .mm-app .mm-log th { font-size: 12px; }
 .mm-app .mm-log td { font-size: 12px; vertical-align: top; }
 .mm-app .mm-log__detail { color: var(--mm-muted); max-width: 32ch; }
+
+/* ---- data tables (Holdings / Realized Gains / Adjustments) --------- */
+
+.mm-app .mm-table { margin: 12px 0; }
+.mm-app .mm-table th,
+.mm-app .mm-table td { font-size: 12px; vertical-align: top; }
+.mm-app .mm-table .mm-num { text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.mm-app .mm-table tfoot th,
+.mm-app .mm-table tfoot td { font-weight: 700; border-top: 2px solid var(--mm-line); }
+.mm-app .mm-table .mm-pill { text-transform: none; }
+
+/* ---- option contracts (M3f): nested lifecycle rows ----------------- */
+
+.mm-app .mm-block { display: block; margin-top: 2px; font-size: 11px; line-height: 1.4; }
+
+.mm-app .mm-detail-row > td { background: #fafbfc; padding-top: 4px; padding-bottom: 4px; }
+.mm-app .mm-detail-row summary {
+	cursor: pointer;
+	font-size: 11px;
+	color: var(--mm-muted);
+	list-style-position: outside;
+}
+.mm-app .mm-detail-row summary:hover { color: var(--mm-ink, inherit); }
+.mm-app .mm-detail-row details[open] summary { margin-bottom: 6px; }
+
+.mm-app .mm-table--nested { margin: 0 0 6px; background: #fff; }
+.mm-app .mm-table--nested th,
+.mm-app .mm-table--nested td { font-size: 11px; }
+
+.mm-app .mm-gain--pos { color: var(--mm-ok); font-weight: 600; }
+.mm-app .mm-gain--neg { color: var(--mm-bad); font-weight: 600; }
+.mm-app .mm-gain--flat { color: var(--mm-muted); }
+
+.mm-app .mm-row-actions { white-space: nowrap; }
+.mm-app .mm-row-actions a { margin-right: 10px; font-size: 12px; }
+.mm-app .mm-delete-link {
+	color: var(--mm-bad);
+	background: none;
+	border: 0;
+	padding: 0;
+	cursor: pointer;
+	font-size: 12px;
+	text-decoration: underline;
+}
+
+.mm-app .mm-year-picker {
+	display: flex;
+	align-items: center;
+	gap: 10px;
+	margin-top: 14px;
+}
+.mm-app .mm-year-picker label { font-weight: 600; font-size: 13px; }
+
+/* ---- inline-SVG charts (mm-charts.js) ----------------------------- */
+
+.mm-app .mm-chart {
+	margin: 12px 0;
+	min-height: 60px;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	color: var(--mm-muted);
+	font-size: 13px;
+}
+.mm-app .mm-chart svg { width: 100%; height: auto; display: block; }
+.mm-app .mm-chart__grid { stroke: var(--mm-line); stroke-width: 1; }
+.mm-app .mm-chart__grid.is-zero { stroke: var(--mm-muted); stroke-dasharray: 3 3; }
+.mm-app .mm-chart__label { fill: var(--mm-muted); font-size: 10px; }
+.mm-app .mm-chart__line { fill: none; stroke: var(--mm-green); stroke-width: 2; }
+.mm-app .mm-chart__area { fill: var(--mm-green); opacity: .08; }
+.mm-app .mm-chart__dot { fill: var(--mm-green); }
+.mm-app .mm-chart__bar.is-pos { fill: var(--mm-ok); }
+.mm-app .mm-chart__bar.is-neg { fill: var(--mm-bad); }
+
+/* ---- currency tag (M4f) ------------------------------------------- */
+
+/* A position in something other than the display currency. Deliberately
+   louder than .mm-pill--muted: the whole point of showing native currencies
+   is that the odd one out has to be impossible to miss. */
+.mm-app .mm-pill--fx {
+	background: #eef4ff;
+	color: #1e40af;
+	border-color: #c7d8f7;
+}
+
+/* ---- wheels (M4g) -------------------------------------------------- */
+
+.mm-app .mm-metrics {
+	display: grid;
+	grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+	gap: 10px;
+	margin: 14px 0 4px;
+}
+.mm-app .mm-metric {
+	background: var(--mm-bg);
+	border: 1px solid var(--mm-line);
+	border-radius: 8px;
+	padding: 9px 11px;
+	display: flex;
+	flex-direction: column;
+	gap: 3px;
+}
+.mm-app .mm-metric__label {
+	font-size: 11px;
+	text-transform: uppercase;
+	letter-spacing: .04em;
+	color: var(--mm-muted);
+}
+.mm-app .mm-metric__value {
+	font-size: 17px;
+	font-weight: 700;
+	font-variant-numeric: tabular-nums;
+}
+
+.mm-app .mm-wheel h2 { display: flex; align-items: center; gap: 8px; }
+.mm-app .mm-wheel__meta { margin: 2px 0 0; font-size: 12px; }
+
+/* A four-state strip down the left edge: which leg of the wheel this is. */
+.mm-app .mm-wheel { border-left: 4px solid var(--mm-line); }
+.mm-app .mm-wheel--put { border-left-color: #b45309; }
+.mm-app .mm-wheel--holding { border-left-color: #6b21a8; }
+.mm-app .mm-wheel--call { border-left-color: var(--mm-green); }
+.mm-app .mm-wheel--flat { border-left-color: var(--mm-line); }
+
+.mm-app .mm-pill--phase-put { background: #fef3e2; color: #92400e; border-color: #f5d9b0; }
+.mm-app .mm-pill--phase-holding { background: #f4ecfd; color: #6b21a8; border-color: #ddcaf5; }
+.mm-app .mm-pill--phase-call { background: #e6f4ee; color: var(--mm-green-dark); border-color: #bfe0d1; }
+.mm-app .mm-pill--phase-flat,
+.mm-app .mm-pill--phase-finished { background: var(--mm-bg); color: var(--mm-muted); }
+.mm-app .mm-pill--put { background: #fef3e2; color: #92400e; border-color: #f5d9b0; }
+.mm-app .mm-pill--call { background: #e6f4ee; color: var(--mm-green-dark); border-color: #bfe0d1; }
+
+.mm-app .mm-wheel__open { margin: 12px 0 0; padding: 0; list-style: none; }
+.mm-app .mm-wheel__open li {
+	padding: 7px 0;
+	border-top: 1px solid var(--mm-line);
+	font-size: 13px;
+	display: flex;
+	align-items: baseline;
+	flex-wrap: wrap;
+	gap: 7px;
+}
+
+.mm-app .mm-wheel__details { margin-top: 12px; }
+.mm-app .mm-wheel__details > summary {
+	cursor: pointer;
+	font-size: 12px;
+	font-weight: 600;
+	color: var(--mm-muted);
+	padding: 4px 0;
+}
+.mm-app .mm-wheel__details > summary:hover { color: var(--mm-ink); }
+
+.mm-app .mm-wheel__tag {
+	display: inline-block;
+	padding: 1px 6px;
+	border-radius: 4px;
+	font-size: 11px;
+	font-weight: 600;
+	white-space: nowrap;
+	background: var(--mm-bg);
+	color: var(--mm-muted);
+}
+.mm-app .mm-wheel__tag--put { background: #fef3e2; color: #92400e; }
+.mm-app .mm-wheel__tag--call { background: #e6f4ee; color: var(--mm-green-dark); }
+.mm-app .mm-wheel__tag--stock { background: #f4ecfd; color: #6b21a8; }
+.mm-app .mm-wheel__tag--warn { background: #fbe9e9; color: #7a1f1f; }
+
+/* ---- playbook ------------------------------------------------------ */
+
+.mm-app .mm-quickref {
+	display: grid;
+	grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+	gap: 8px;
+	margin: 14px 0 20px;
+}
+.mm-app .mm-quickref > div {
+	background: var(--mm-bg);
+	border: 1px solid var(--mm-line);
+	border-radius: 8px;
+	padding: 8px 11px;
+	display: flex;
+	flex-direction: column;
+	gap: 2px;
+	font-size: 12px;
+}
+.mm-app .mm-quickref strong { font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: var(--mm-muted); }
+
+.mm-app .mm-playbook { margin: 0 0 18px; }
+.mm-app .mm-playbook h3 { margin: 0 0 8px; font-size: 14px; }
+.mm-app .mm-playbook__rule {
+	display: flex;
+	gap: 10px;
+	padding: 6px 0;
+	border-top: 1px solid var(--mm-line);
+	font-size: 13px;
+	line-height: 1.55;
+	max-width: 88ch;
+}
+.mm-app .mm-playbook__num {
+	flex: 0 0 auto;
+	font-variant-numeric: tabular-nums;
+	font-weight: 700;
+	color: var(--mm-green);
+	min-width: 2.5em;
+}
 
 @media (prefers-reduced-motion: reduce) {
 	.mm-app * { transition: none !important; }

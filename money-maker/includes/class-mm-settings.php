@@ -26,10 +26,11 @@ final class MM_Settings {
 	const CAPABILITY   = 'manage_options';
 	const ENVIRONMENTS = array( 'practice', 'live' );
 
-	const SAVE_ACTION  = 'mm_save_settings';
-	const KEY_ACTION   = 'mm_manage_crypto_key';
-	const TOKEN_ACTION = 'mm_save_refresh_token';
-	const CLEAR_ACTION = 'mm_clear_token';
+	const SAVE_ACTION     = 'mm_save_settings';
+	const CURRENCY_ACTION = 'mm_save_display_currency';
+	const KEY_ACTION      = 'mm_manage_crypto_key';
+	const TOKEN_ACTION    = 'mm_save_refresh_token';
+	const CLEAR_ACTION    = 'mm_clear_token';
 
 	/**
 	 * Singleton instance.
@@ -56,6 +57,7 @@ final class MM_Settings {
 	 */
 	public function register(): void {
 		add_action( 'admin_post_' . self::SAVE_ACTION, array( $this, 'handle_save_settings' ) );
+		add_action( 'admin_post_' . self::CURRENCY_ACTION, array( $this, 'handle_save_display_currency' ) );
 		add_action( 'admin_post_' . self::KEY_ACTION, array( $this, 'handle_manage_key' ) );
 		add_action( 'admin_post_' . self::TOKEN_ACTION, array( $this, 'handle_save_refresh_token' ) );
 		add_action( 'admin_post_' . self::CLEAR_ACTION, array( $this, 'handle_clear_token' ) );
@@ -64,10 +66,13 @@ final class MM_Settings {
 	/**
 	 * Current settings, merged over defaults.
 	 *
-	 * @return array{environment:string}
+	 * @return array{environment:string,display_currency:string}
 	 */
 	public function get_settings(): array {
-		$defaults = array( 'environment' => 'practice' );
+		$defaults = array(
+			'environment'      => 'practice',
+			'display_currency' => MM_Money::DEFAULT_CURRENCY,
+		);
 		$stored   = get_option( self::OPTION, array() );
 
 		if ( ! is_array( $stored ) ) {
@@ -80,7 +85,54 @@ final class MM_Settings {
 			$settings['environment'] = 'practice';
 		}
 
+		// Read straight off the option rather than through MM_Money, which reads
+		// this method — the whitelist lives there, the normalisation here.
+		if ( ! in_array( $settings['display_currency'], MM_Money::SUPPORTED, true ) ) {
+			$settings['display_currency'] = MM_Money::DEFAULT_CURRENCY;
+		}
+
 		return $settings;
+	}
+
+	/**
+	 * Handle the display-currency form submission.
+	 *
+	 * This only changes what the *totals* on the holdings, wheels and dashboard
+	 * screens are expressed in. Per-position figures always stay in the
+	 * security's own trading currency, and the tax screens are always CAD.
+	 */
+	public function handle_save_display_currency(): void {
+		if ( ! current_user_can( self::CAPABILITY ) ) {
+			wp_die( esc_html__( 'You do not have permission to do this.', 'money-maker' ) );
+		}
+
+		check_admin_referer( self::CURRENCY_ACTION );
+
+		$currency = isset( $_POST['mm_display_currency'] )
+			? strtoupper( sanitize_text_field( wp_unslash( $_POST['mm_display_currency'] ) ) )
+			: MM_Money::DEFAULT_CURRENCY;
+
+		if ( ! in_array( $currency, MM_Money::SUPPORTED, true ) ) {
+			$currency = MM_Money::DEFAULT_CURRENCY;
+		}
+
+		$settings                     = $this->get_settings();
+		$settings['display_currency'] = $currency;
+
+		update_option( self::OPTION, $settings );
+
+		add_settings_error(
+			'mm_settings',
+			'mm_display_currency_saved',
+			sprintf(
+				/* translators: %s: currency code */
+				__( 'Totals are now shown in %s.', 'money-maker' ),
+				$currency
+			),
+			'updated'
+		);
+
+		MM_Admin::redirect_with_notices( MM_Admin::SETTINGS_SLUG );
 	}
 
 	/**

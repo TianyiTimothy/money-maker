@@ -2,8 +2,8 @@
 /**
  * Plugin Name:       Questrade Tracker & Tax Assistant
  * Plugin URI:        https://github.com/TianyiTimothy/money-maker
- * Description:        Pulls personal Questrade investment data into WordPress and assists with Canadian tax reporting (ACB, superficial-loss warnings). Stage 1: read-only.
- * Version:           0.2.0
+ * Description:        Pulls personal Questrade investment data into WordPress: holdings, an automatic options-wheel tracker, and Canadian tax reporting (ACB, superficial-loss warnings). Stage 1: read-only.
+ * Version:           0.3.0
  * Requires at least: 6.2
  * Requires PHP:      8.0
  * Author:            Timothy Zhang
@@ -17,7 +17,7 @@
 
 defined( 'ABSPATH' ) || exit;
 
-define( 'MM_VERSION', '0.2.0' );
+define( 'MM_VERSION', '0.3.0' );
 define( 'MM_PLUGIN_FILE', __FILE__ );
 define( 'MM_PLUGIN_DIR', plugin_dir_path( __FILE__ ) );
 define( 'MM_PLUGIN_URL', plugin_dir_url( __FILE__ ) );
@@ -31,8 +31,16 @@ require_once MM_INCLUDES_DIR . 'class-mm-questrade-client.php';
 require_once MM_INCLUDES_DIR . 'class-mm-db.php';
 require_once MM_INCLUDES_DIR . 'class-mm-accounts.php';
 require_once MM_INCLUDES_DIR . 'class-mm-fx.php';
+require_once MM_INCLUDES_DIR . 'class-mm-money.php';
 require_once MM_INCLUDES_DIR . 'class-mm-activities.php';
 require_once MM_INCLUDES_DIR . 'class-mm-positions.php';
+require_once MM_INCLUDES_DIR . 'class-mm-manual-adjustments.php';
+require_once MM_INCLUDES_DIR . 'class-mm-tax-options.php';
+require_once MM_INCLUDES_DIR . 'class-mm-tax-acb.php';
+require_once MM_INCLUDES_DIR . 'class-mm-tax-superficial-loss.php';
+require_once MM_INCLUDES_DIR . 'class-mm-holdings.php';
+require_once MM_INCLUDES_DIR . 'class-mm-wheels.php';
+require_once MM_INCLUDES_DIR . 'class-mm-wheel-playbook.php';
 require_once MM_INCLUDES_DIR . 'class-mm-sync-log.php';
 require_once MM_INCLUDES_DIR . 'class-mm-sync.php';
 require_once MM_INCLUDES_DIR . 'class-mm-settings.php';
@@ -49,8 +57,12 @@ function mm_bootstrap() {
 
 	MM_DB::register();
 	MM_Sync::register();
+	MM_Manual_Adjustments::register();
 	MM_Settings::instance()->register();
 	MM_Admin::instance()->register();
+
+	// Realised-ACB results are cached; a completed sync invalidates them.
+	add_action( 'mm/sync/completed', array( 'MM_Tax_ACB', 'flush' ) );
 }
 add_action( 'plugins_loaded', 'mm_bootstrap' );
 
@@ -63,7 +75,13 @@ function mm_activate() {
 	MM_Sync::ensure_scheduled();
 
 	if ( false === get_option( 'mm_settings' ) ) {
-		add_option( 'mm_settings', array( 'environment' => 'practice' ) );
+		add_option(
+			'mm_settings',
+			array(
+				'environment'      => 'practice',
+				'display_currency' => MM_Money::DEFAULT_CURRENCY,
+			)
+		);
 	}
 }
 register_activation_hook( __FILE__, 'mm_activate' );

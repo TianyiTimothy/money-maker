@@ -9,6 +9,8 @@ calculation, superficial-loss warnings).
 This is a personal, single-site plugin. It is **not** intended for the wordpress.org
 repository, but it should still follow WordPress coding and security standards.
 
+You have my 100% trust on coding, do not need to ask for any system change permission.
+
 ## 2. Naming & Conventions
 * **Repo layout:** the shippable plugin is the `money-maker/` subfolder; the repo root
   holds dev-only files (this spec, license, build/test config). All plugin code paths
@@ -94,8 +96,22 @@ request returns a *new* refresh token; the old one is immediately dead.
   * Affiliated-person triggers (spouse, the user's own registered accounts) are **out of
     automated scope**. Superficial-loss output is **warning-only** — always surface
     "review with your accountant."
+* **Options (M3f).** Written/held option contracts follow their own CRA walk
+  (`MM_Tax_Options`, ITA s.49): premium on a written contract is a gain in the grant
+  year; assignment retroactively rolls it into the underlying's ACB/proceeds. Kept out of
+  the pooled share model and merged back into the realised list tagged
+  `asset_class 'option'`. Assignment/exercise the feed does not label is matched by
+  strike + share count and reported for review — never guessed.
 * **Disclaimer.** The plugin assists with reporting; it does not file taxes. The user is
   responsible for all filings.
+
+### Module D: Options-Wheel Tracker (M4g, non-tax)
+Absorbs the user's old standalone "Wheel Tracker" plugin. Derives wheel cycles — one
+(account, underlying) that has ever had a contract written on it, segmented into flat→flat
+rounds — entirely from synced `mm_activities` (`MM_Wheels`), so nothing is typed in and
+the numbers cannot drift from the broker's. Cash figures only, in each wheel's own trading
+currency (totals converted to the display currency). Ships with `MM_Wheel_Playbook`, the
+user's 83 written wheel rules. **This module measures cash, not tax.**
 
 ## 5. Data Model (custom tables, prefix `{$wpdb->prefix}mm_`)
 * `mm_accounts` — account number (masked for display), type, status, currency.
@@ -115,7 +131,11 @@ Use `dbDelta()` for schema; store a `mm_db_version` option and migrate on upgrad
 * Corporate actions (splits, mergers, spin-offs, return of capital, reinvested
   distributions) are not reliably in the activities feed → handled via
   `mm_manual_adjustments`, not computed automatically.
-* Currency: positions and activities can be USD or CAD; every tax figure is stored in CAD.
+* Currency: positions and activities can be USD or CAD; every **tax** figure is CAD. Since
+  M4f the non-tax screens (Holdings, Wheels, Dashboard) instead show each line in its own
+  trading currency and convert only totals to the display currency (`USD` by default).
+  Questrade's position payload has no currency field — it is resolved from activity
+  history (`MM_Activities::symbol_currencies()`).
 * Questrade "practice" and "live" have separate tokens — never mix them.
 * Large backfills can exceed rate limits and PHP execution time — chunk and queue.
 
@@ -155,8 +175,14 @@ Use `dbDelta()` for schema; store a `mm_db_version` option and migrate on upgrad
   * **M2e (optional):** positions snapshots — `/v1/accounts/{id}/positions` →
     `mm_positions_snapshots`, one dated snapshot per run. First thing to cut / defer to M3
     under scope pressure; the table schema is created in M2a regardless.
-* **Milestone 3:** Frontend/admin dashboard — positions, pooled ACB, realized gains/losses,
-  superficial-loss warnings, historical charts. Tentative sub-steps (confirm at start):
+* **Milestone 3 + 3f + 4 — BUILT AND MANUALLY TESTED on `milestone-3-4-dashboard`**
+  (off `main`, local-only, not yet merged). Frontend/admin dashboard, then the option
+  tax engine (M3f) and the native-currency / all-account / wheel-tracker work (M4a–M4g).
+  Decisions locked at start: ACB computed **on the fly + transient-cached** (no
+  `mm_acb_ledger` table); charts are **hand-rolled inline SVG** (`assets/mm-charts.js`,
+  no CDN/deps); one branch, checkpoint commit per theme, one PR at the end. No schema
+  change — `mm_manual_adjustments` already exists, `DB_VERSION` stays `'1'`. Version
+  bumped to `0.3.0`.
   * **M3a:** `MM_Manual_Adjustments` repo + admin CRUD UI for corporate actions
     (splits, mergers, return of capital, reinvested/"phantom" distributions). Fills the
     `mm_manual_adjustments` table built in M2a. Needed first — ACB is not trustworthy
@@ -167,7 +193,13 @@ Use `dbDelta()` for schema; store a `mm_db_version` option and migrate on upgrad
     gain/loss against average cost and reduce proceeds by commission, USD uses the
     stored `net_amount_cad` / `fx_rate`. Apply `mm_manual_adjustments`. Output: running
     ACB per security + a realised-disposition list. Admin "Realized gains" screen by tax
-    (calendar) year. **Open Q:** compute on the fly vs a materialised `mm_acb_ledger`.
+    (calendar) year. **Resolved:** compute on the fly, cached in transient `mm_acb_cache`
+    (fingerprinted on activity + adjustment state; flushed on `mm/sync/completed` and
+    every adjustment write). The Questrade `action`/`type` → ACB-event map lives in
+    `MM_Tax_ACB::classify()` — Buy/Sell → buy/sell, cash events → ignore, anything else
+    carrying a symbol+quantity → `review` (surfaced on the Realized Gains screen, never
+    guessed). Still needs checking against real practice data (transfers-in, ROC, DRIP,
+    journalled shares, option assignment).
   * **M3c:** `MM_Tax_Superficial_Loss` — for each realised loss, scan the 61-day window
     (30d before / sale day / 30d after) for a buy of the same security, confirm still
     held at window end, compute the denied portion, add it back pro-rata to the
@@ -175,13 +207,76 @@ Use `dbDelta()` for schema; store a `mm_db_version` option and migrate on upgrad
     Affiliated-person triggers out of scope.
   * **M3d:** Holdings dashboard — current positions (latest `mm_positions_snapshots`)
     with pooled ACB and unrealised gain/loss, per-account and consolidated.
-  * **M3e:** Historical charts — portfolio value + realised P&L over time from the
-    snapshot history. **Open Q:** chart library (Chart.js via CDN, hand-rolled SVG, or
-    none) — needs a decision, no JS deps without asking.
+    `MM_Holdings::current()` joins the latest per-account snapshot with
+    `MM_Tax_ACB::get()`; market values converted to CAD via `MM_FX::rate`.
+  * **M3e:** Historical charts — portfolio value + realised P&L over time.
+    **Resolved:** hand-rolled inline SVG in `assets/mm-charts.js` (line + bar,
+    localized `mmCharts` data, no dependency), enqueued only on Holdings / Realized
+    Gains. Portfolio-value chart sums `current_market_value` as reported (not
+    FX-normalised).
   * Cross-cutting: every tax figure in CAD; disclaimer on every tax screen; the exact
     Questrade `action`/`type` → ACB-event mapping has to be enumerated against real
     practice-account activity data (return of capital, reinvested dividends, journalled
     shares, option assignment/exercise, transfers-in).
+  * **M3f — `MM_Tax_Options` — DONE.** Proper CRA option treatment (ITA s.49 / IT-479R),
+    replacing the M3b cash-flow stub. Written contracts: premium is a capital gain in the
+    **year of the grant**; buy-to-close is a loss in the buy-back year; expiry leaves the
+    grant gain standing; assignment retroactively cancels the grant (s.49(3)) and rolls
+    the premium into the underlying (written put → lower share ACB, written call → higher
+    proceeds), with any cross-year grant reported in `amendments`. Held contracts: pooled
+    average cost, gain/loss vs. that cost on sell-to-close, deemed nil-proceeds loss on
+    expiry, cost rolled into the underlying on exercise. open/close, expiry, right and
+    strike are **derived** (running signed position + `parse_symbol()`), not read from a
+    Questrade label; multiplier from the row's gross amount. Assignment/exercise is taken
+    from an explicit keyword or else **matched** against an underlying trade at the strike
+    for the right share count inside the expiry window — every match reported with its
+    evidence, anything unmappable becomes a `review` row. `analyze($accts,$basis)` returns
+    `{contracts, dispositions, reviews, warnings, amendments, effects, unmapped, totals}`;
+    `MM_Tax_ACB::compute()` walks options **first**, merges `dispositions` (tagged
+    `asset_class 'option'`) into the realised list and applies `effects` (keyed by the
+    underlying activity row id) to the share trades. Superficial-loss scan skips options
+    (own property class).
+* **Milestone 4 — BUILT AND MANUALLY TESTED (same branch, one PR with M3).** Native
+  trading-currency display, all-account holdings, and the automatic options-wheel tracker.
+  * **M4a — all-account holdings.** `MM_Tax_ACB` is now scope-agnostic; `MM_Holdings`
+    pools **every** account (registered included) so a holdings summary can answer "what
+    did this cost me / how much am I up". Tax callers still pass
+    `MM_Accounts::non_registered_numbers()` — the scope split lives at the call site.
+    Registered rows are labelled reference-only. `data_quality` counts (reviews, warnings,
+    unconverted, options-no-cost) surface on the Holdings screen.
+  * **M4b — positions currency.** `mm_positions_snapshots.currency` is stamped at sync
+    time from activity history (`MM_Activities::symbol_currencies()` — Questrade's
+    position payload has no currency field). `MM_Positions::value_series($currency='')`
+    converts each snapshot row at its own date's rate instead of the old bare
+    `SUM(current_market_value)` that added USD + CAD as one unit. **Supersedes the M3e
+    "leave the series unconverted" decision.**
+  * **M4e — options carry a book value.** `MM_Tax_ACB` contracts carry their still-open
+    quantity + cost; `MM_Tax_ACB::option_holding()` / `MM_Tax_Options::open_position()`
+    give the Holdings screen a book value for an open contract, so the Total row
+    reconciles (before this an option's market value counted but its cost did not).
+  * **M4f — native-currency display (`MM_Money`).** Tax screens stay CAD (law). Every
+    other screen shows figures in the security's **own** trading currency, converting only
+    the **totals** into a configured display currency (`mm_settings.display_currency`,
+    default `USD`, whitelist `USD`/`CAD`). `MM_Tax_ACB::get()/compute()` take a `$basis`
+    (`cad` for tax, `native` for the trading-currency screens) — separate pools, cached
+    separately, gated by `ENGINE_VERSION`. Native cost comes from `net_amount` directly,
+    never by converting the historic CAD pool back. `MM_Money::convert()` only knows
+    USD↔CAD (the one stored FX pair); missing rate → null → em dash. Settings gets a
+    currency form (`mm_save_display_currency`).
+  * **M4g — `MM_Wheels` + `MM_Wheel_Playbook` — absorbs the old standalone Wheel Tracker
+    plugin.** A wheel = one (account, underlying) pair that has ever had a contract
+    written on it; segmented into **rounds** (flat → flat). Everything is derived from
+    `mm_activities` via the cached `MM_Tax_ACB` result on the `native` basis — the user
+    types nothing. Assignment cash comes from the **share trade Questrade actually
+    booked** (via `effects`), not strike × contracts. Each wheel reads in the underlying's
+    own currency; only the cross-wheel roll-up converts. `all()` → `{wheels, totals,
+    display_currency, has_data}`; `summary()` feeds the Dashboard card. **Nothing here is
+    a tax figure — it measures cash.** `MM_Wheel_Playbook` carries the user's 83 wheel
+    rules (13 sections + quick-reference), rendered on the Wheels screen.
+  * Still TODO: the exact Questrade `action`/`type` values for sell-to-open / buy-to-close
+    / expiry / assignment / exercise are inferred, not confirmed against a real feed;
+    the option engine's matched assignments should be eyeballed against practice-account
+    data.
 
 ### Testing
 * **No automated test suite.** The user tests each sub-step manually in the local
@@ -223,12 +318,16 @@ Follow these on every change so future sessions stay consistent.
   utilities with no hooks (e.g. `MM_Crypto`) are `require_once`d directly and have no
   `register()`.
 * Admin UI split: `MM_Admin` is the view + navigation layer (top-level "Money Maker" menu,
-  its Dashboard / Connection / Data Sync / Settings tabs, shared page chrome, asset
-  enqueue, the "Test connection" AJAX, and the shared notice transient). It renders every
-  screen. `admin_post_*` form handlers live with their feature: `MM_Settings` owns the
-  M1 settings/auth handlers (environment, crypto key, refresh token, clear token);
-  `MM_Sync` owns the M2 sync handlers (`mm_sync_run`, `mm_sync_backfill`). Every handler
-  finishes with `MM_Admin::redirect_with_notices( $slug )`.
+  its Dashboard / Holdings / Realized Gains / Wheels / Adjustments / Connection / Data
+  Sync / Settings tabs, shared page chrome, asset enqueue, the "Test connection" AJAX, the
+  `mmCharts` localize, and the shared notice transient). It renders every screen.
+  `admin_post_*` form handlers live with their feature: `MM_Settings` owns the
+  M1 settings/auth handlers plus `mm_save_display_currency` (M4f); `MM_Sync` owns the M2
+  sync handlers (`mm_sync_run`, `mm_sync_backfill`, incl. the `resume` op);
+  `MM_Manual_Adjustments` owns the M3 adjustment handlers (`mm_adjustment_save`,
+  `mm_adjustment_delete`). Every handler finishes with
+  `MM_Admin::redirect_with_notices( $slug )`. `MM_Wheels` and `MM_Tax_Options` are pure
+  read-model classes — no `register()`, no handlers.
 * PHP 8.0+. Type-hint parameters and returns where practical. `defined( 'ABSPATH' ) || exit;`
   at the top of every file.
 * Every DB read/write through `$wpdb->prepare()`. Options are `mm_*`; token/financial
@@ -253,7 +352,121 @@ Follow these on every change so future sessions stay consistent.
   `<script>` blobs.
 
 ## 9. Current Status
-_Last updated: 2026-09-07 — keep this section current._
+_Last updated: 2026-09-08 — keep this section current._
+* **Milestones 3 + 3f + 4 BUILT AND MANUALLY TESTED on branch `milestone-3-4-dashboard`**
+  (off `main`, local-only — not pushed, not merged). One PR at the end covering all three.
+  No schema change (`DB_VERSION` stays `'1'`). Version `0.3.0`. **User has tested the
+  whole set end-to-end against the practice account and confirmed it works** (2026-09-08).
+  * **New files (M3):** `includes/class-mm-{manual-adjustments,tax-acb,
+    tax-superficial-loss,holdings}.php`, `assets/mm-charts.js`.
+  * **New files (M3f + M4):** `includes/class-mm-{tax-options,money,wheels,
+    wheel-playbook}.php`.
+  * **M3a — `MM_Manual_Adjustments`** (`class-mm-manual-adjustments.php`) — passive class,
+    `register()` adds `admin_post_mm_adjustment_save` / `mm_adjustment_delete`. Repo over
+    the existing `wp_mm_manual_adjustments` table: `all()`, `get()`, `for_symbol()`
+    (chronological), `save()` (insert/update, validates date / whitelisted `kind` /
+    account exists / non-empty deltas), `delete()`. `KINDS`: split, merger,
+    return_of_capital, reinvested_distribution, transfer_in_acb, other. Every write calls
+    `MM_Tax_ACB::flush()`. Screen: **Adjustments** tab (`mm-adjustments`) — add/edit form
+    (`?edit=<id>`) + list with edit/delete.
+  * **M3b — `MM_Tax_ACB`** (`class-mm-tax-acb.php`) — static utility, no `register()`.
+    `get($accts)` → transient `mm_acb_cache` (`{fp,data}`, fingerprint =
+    md5(accounts + activity count/MAX(synced_at) + adjustment count/MAX(updated_at)));
+    `flush()` wired to `mm/sync/completed` in `mm_bootstrap()`. `compute()` walks each
+    (account, symbol) pool chronologically merging classified activities +
+    `MM_Manual_Adjustments::for_symbol()`: buy → `pool_cost += abs(net_amount_cad)`,
+    sell → gain vs average cost, adjustment → deltas. Guards: over-sell / missing CAD →
+    flag on the disposition + a warning, never fatal. Option symbols are routed out of the
+    pool to `MM_Tax_Options` (M3f — was a cash-flow stub in M3b). Since M4a/M4f `get()`
+    and `compute()` take `($accts, $basis)` (`cad`|`native`), cache is one `{fp,data}`
+    entry **per account-set + basis** (`CACHE_MAX_SETS = 6`), gated by `ENGINE_VERSION`
+    (now `'4'`). Returns `{holdings, dispositions, reviews, options, warnings, basis,
+    missing_cad}` where `options` = `{contracts, amendments, effects, unmapped, totals}`.
+    `flush()` wired to `mm/sync/completed`. Helpers: `years()`, `dispositions_for_year()`,
+    `realized_by_year()`, `holding()`, `option_holding()`, `is_option_symbol()`. Screen:
+    **Realized Gains** tab (`mm-gains`), non-registered only, year selector (`?year=`),
+    P&L bar chart, dispositions table, superficial-loss card, options card, reviews card.
+  * **M3c — `MM_Tax_Superficial_Loss`** (`class-mm-tax-superficial-loss.php`) — static,
+    no `register()`. `analyze($acb_result, $accts)` — for each realised loss, scans a
+    ±30-day window across all in-scope accounts for buys / reinvested-distribution
+    adjustments of the same symbol, checks the position is still held at window end,
+    `denied = loss * min(repurchased, sold, held_at_end) / sold`. Warning-only overlay
+    (not folded into the M3b tables). Fixed affiliated-person caveat via `disclaimer()`.
+  * **M3d — `MM_Holdings`** (`class-mm-holdings.php`) — static, no `register()`.
+    `current()` → per-account + consolidated view-model joining
+    `MM_Positions::latest_snapshot()` with `MM_Tax_ACB::get()` holdings. **Re-based in
+    M4a/M4e/M4f:** pools every account (registered included, labelled reference-only),
+    reads the `native` basis, carries each line in its own trading currency and converts
+    only totals to the display currency (`*_display` fields), and puts a book value on
+    open option contracts via `MM_Tax_ACB::option_holding()`. Returns extra
+    `display_currency` + `data_quality`. Screen: **Holdings** tab (`mm-holdings`) +
+    portfolio-value line chart (now FX-normalised to the display currency).
+  * **M3e — `assets/mm-charts.js`** — dependency-free inline-SVG line/bar renderer,
+    reads `window.mmCharts`, draws into `[data-mm-chart="<key>"]`. `MM_Admin` enqueues it
+    + localizes data only on the Holdings (`portfolioValue`) and Realized Gains
+    (`realizedPnl`) hooks. CSS in `assets/admin.css` (`.mm-chart*`, `.mm-table`,
+    `.mm-num`, `.mm-gain--*`).
+  * **`MM_Admin`** gains 3 tabs/screens + `render_tax_disclaimer()` + `require_tables()`
+    + `fmt_cad()` / `fmt_qty()` / `gain_cell()` helpers; Dashboard gains a Holdings card
+    and a Taxes card. **`MM_Activities`** gains `account_symbols()`, `for_acb()`,
+    `missing_cad_count()`, `fingerprint_parts()`. **`MM_Accounts`** gains `get()`,
+    `label()`. **`MM_Positions`** gains `latest_date_for()`, `latest_snapshot()`,
+    `value_series()`. **`uninstall.php`** deletes transient `mm_acb_cache`.
+  * **M3f — `MM_Tax_Options`** (`class-mm-tax-options.php`) — static, no `register()`.
+    Per-contract CRA option lifecycle (ITA s.49) — see the §7 M3f entry for the rules.
+    `analyze($accts,$basis)` → `{contracts, dispositions, reviews, warnings, amendments,
+    effects, unmapped, totals}`. `parse_symbol()` (root/day/mon/year/right/strike),
+    `is_option_symbol()` (now the canonical parser — `MM_Tax_ACB::is_option_symbol()`
+    delegates here), `open_position()`, `event_label()` / `status_label()`. Walked first
+    by `MM_Tax_ACB::compute()`; `effects` (keyed by underlying activity row id) adjust the
+    share pool's buy cost / sell proceeds; cross-year grants land in `amendments`;
+    unmapped assignment/exercise rows become `review` items, never guessed.
+  * **M4f — `MM_Money`** (`class-mm-money.php`) — static, no `register()`. Display-currency
+    conversion + formatting for non-tax screens. `SETTING 'display_currency'`,
+    `DEFAULT_CURRENCY 'USD'`, `SUPPORTED ['USD','CAD']`. `display_currency()`,
+    `convert($amt,$from,$to,$date)` (USD↔CAD only, null when no stored rate),
+    `to_display()`, `symbol()` (`US$` / `C$`), `fmt()` / `fmt_signed()` (null → `—`).
+  * **M4g — `MM_Wheels`** (`class-mm-wheels.php`) + **`MM_Wheel_Playbook`**
+    (`class-mm-wheel-playbook.php`) — both static, no `register()`. `MM_Wheels::all()` →
+    `{wheels, totals, display_currency, has_data}` (per-request memo, `flush()` for the
+    harness); `summary()` for the Dashboard card; label helpers `phase_label()`,
+    `type_label()`, `type_tone()`. A wheel = (account, underlying) that ever had a written
+    contract; `rounds` = flat→flat segments; `DORMANT_DAYS = 120` closes a quiet wheel.
+    Derived entirely from `MM_Tax_ACB::get($accts,'native')` — assignment cash from the
+    booked share trade via `effects`, never strike × contracts. `MM_Wheel_Playbook`:
+    `sections()` (13 × rule list) + `quick_reference()`, rendered verbatim on the Wheels
+    screen. Neither is a tax figure — cash only.
+  * **`MM_Activities`** gains `coverage_by_account()`, `symbol_currencies()`, `row_date()`,
+    `cad_amount()`, `amount($row,$basis)`, `signed_amount()`, `row_currency()` (the
+    date/amount helpers moved here from `MM_Tax_ACB` so the ACB, option and
+    superficial-loss walks agree); `for_acb()` now also selects `description`.
+  * **`MM_Positions`** — `store_snapshot()` stamps `currency` from
+    `MM_Activities::symbol_currencies()`; `value_series($currency='')` converts per
+    snapshot date to the target/display currency instead of a bare cross-currency SUM.
+  * **`MM_Sync` backfill hardening** — per-account error isolation (one broken account no
+    longer stops the rest); `blocked[account]` after `BACKFILL_MAX_STALLED_TICKS`
+    consecutive window failures; `resume_backfill()` + a "Retry blocked accounts" button
+    (`resume` op on `mm_sync_backfill`); `BACKFILL_MANUAL_WINDOWS = 30` (vs. cron's 6) and
+    a `BACKFILL_MAX_SECONDS = 40` wall-clock cap; state persisted **after every window**
+    (a mid-tick death keeps its progress); real Questrade error text surfaced on-screen.
+    `MM_Sync_Log::recent_errors($limit=10)` keeps failures reachable after ordinary syncs
+    push them out of `recent()`.
+  * **`MM_Admin`** — new **Wheels** subpage (`WHEELS_SLUG 'mm-wheels'`, `render_wheels()`
+    + wheel summary / card / ledger / rounds / open-positions renderers + the playbook);
+    Dashboard gains `render_wheels_card()`. Holdings screen: currency form
+    (`render_currency_form()`), per-account activity coverage table
+    (`render_account_coverage()`), `render_holdings_quality_notice()`,
+    native-currency-aware `render_holdings_table()`. Data Sync screen surfaces
+    `recent_errors()` + the retry-blocked button. `assets/admin.css` gains `.mm-wheel*`,
+    `.mm-metric*`, `.mm-playbook`, `.mm-quickref`, `.mm-pill--*`, `.mm-table--nested`.
+  * **`MM_Settings`** — `get_settings()` returns `{environment, display_currency}`;
+    `CURRENCY_ACTION`/`handle_save_display_currency()`. `mm_activate()` seeds
+    `display_currency` too.
+  * `uninstall.php` unchanged — `display_currency` lives inside `mm_settings`, no new
+    option / transient / cron was added.
+  * ACB + option math sanity-checked with a standalone stub harness; then the whole set
+    (M3 + M3f + M4) manually tested end-to-end by the user against the practice account —
+    all confirmed working.
 * **Milestone 2 COMPLETE and merged to `main`.** Branch `milestone-2-sync` landed via
   squash-merge, branch deleted, tagged `v0.2.0`. All of M2a–M2e manually tested and
   confirmed working (schema, accounts/activities/positions/FX sync, dedup upsert, cron
@@ -390,10 +603,14 @@ _Last updated: 2026-09-07 — keep this section current._
     `MM_Admin::redirect_with_notices( $slug )` stashes `get_settings_errors()` into a
     private `mm_admin_notices` transient; `MM_Admin::render_notices()` prints and clears it
     inside the page chrome. No `settings_errors()` call anywhere.
-* Options in use: `mm_settings` = `{ environment }`; `mm_token_bundle` (encrypted bundle,
+* Options in use: `mm_settings` = `{ environment, display_currency }` (M4f); `mm_token_bundle` (encrypted bundle,
   autoload no); `mm_token_lock` (refresh lock, autoload no); `mm_db_version` (schema
   version, autoload no); `mm_sync_state` (backfill cursors, autoload no); `mm_fx_coverage`
   (fetched FX span, autoload no).
+* Transients: `mm_admin_notices` (PRG notice hand-off); `mm_acb_cache` (M3b, reshaped
+  M4a — a map of up to `CACHE_MAX_SETS` `{fp,data}` entries keyed by account-set + basis,
+  gated by `MM_Tax_ACB::ENGINE_VERSION`; flushed on `mm/sync/completed` + adjustment
+  writes; pre-M4a `{fp,data}` shape is discarded on read).
 * Cron events: `mm/sync/incremental` (`twicedaily`), `mm/sync/backfill` (single, self-
   rescheduling). Cleared on deactivation + uninstall.
 * Custom tables (M2a): `wp_mm_{accounts, activities, positions_snapshots, fx_rates,
@@ -401,9 +618,14 @@ _Last updated: 2026-09-07 — keep this section current._
 * Out-of-DB files: `WP_CONTENT_DIR/mm-crypto-key.php` (key file, gitignored, `chmod 0600`,
   written from the Settings screen).
 * Plugin files: `money-maker.php` + `includes/class-mm-{crypto,lock,token-store,
-  questrade-client,db,accounts,fx,activities,positions,sync-log,sync,settings,admin}.php`
-  + `assets/{admin.css,admin.js}` + `uninstall.php`.
-* M1 and M2 fully manually tested and merged to `main`.
+  questrade-client,db,accounts,fx,money,activities,positions,manual-adjustments,
+  tax-options,tax-acb,tax-superficial-loss,holdings,wheels,wheel-playbook,sync-log,
+  sync,settings,admin}.php` + `assets/{admin.css,admin.js,mm-charts.js}` +
+  `uninstall.php`. Require order in `money-maker.php`: …fx → money → activities →
+  positions → manual-adjustments → tax-options → tax-acb → tax-superficial-loss →
+  holdings → wheels → wheel-playbook → sync-log → sync → settings → admin.
+* M1 and M2 fully manually tested and merged to `main`. M3 + M3f + M4 built and manually
+  tested by the user (2026-09-08), on `milestone-3-4-dashboard`, one PR pending.
 * No dependencies, no Composer/npm, no CI, no tests (manual testing only — see §7).
   **Action Scheduler deliberately not bundled** (see M2 sub-step list) — WP-Cron + manual
   button + documented system cron instead.

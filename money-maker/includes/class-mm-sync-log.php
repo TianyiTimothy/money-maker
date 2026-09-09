@@ -133,6 +133,33 @@ final class MM_Sync_Log {
 	}
 
 	/**
+	 * The most recent failed rows, newest first.
+	 *
+	 * recent() is a fixed window of the last N rows of any status, and a couple of
+	 * ordinary syncs (2 + 2 per account rows each) will push a backfill failure
+	 * straight out of it. This keeps the failures reachable regardless.
+	 *
+	 * @param int $limit Rows to return.
+	 * @return array<int,array<string,mixed>>
+	 */
+	public static function recent_errors( int $limit = 10 ): array {
+		global $wpdb;
+
+		$limit = max( 1, min( 100, $limit ) );
+
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery
+		$rows = $wpdb->get_results(
+			$wpdb->prepare(
+				'SELECT * FROM ' . MM_DB::table( 'sync_log' ) . " WHERE status IN ( 'error', 'partial' ) ORDER BY id DESC LIMIT %d",
+				$limit
+			),
+			ARRAY_A
+		);
+
+		return is_array( $rows ) ? $rows : array();
+	}
+
+	/**
 	 * The last completed (non-'running') row for one endpoint, or null.
 	 *
 	 * @param string $endpoint Endpoint key.
