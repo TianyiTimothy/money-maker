@@ -175,9 +175,10 @@ Use `dbDelta()` for schema; store a `mm_db_version` option and migrate on upgrad
   * **M2e (optional):** positions snapshots — `/v1/accounts/{id}/positions` →
     `mm_positions_snapshots`, one dated snapshot per run. First thing to cut / defer to M3
     under scope pressure; the table schema is created in M2a regardless.
-* **Milestone 3 + 3f + 4 — BUILT AND MANUALLY TESTED on `milestone-3-4-dashboard`**
-  (off `main`, local-only, not yet merged). Frontend/admin dashboard, then the option
-  tax engine (M3f) and the native-currency / all-account / wheel-tracker work (M4a–M4g).
+* **Milestone 3 + 3f + 4 — COMPLETE, merged to `main`.** PR #3 squash-merged as
+  `e096504`; branch `milestone-3-4-dashboard` deleted; tagged `v0.3.0`. Frontend/admin
+  dashboard, then the option tax engine (M3f) and the native-currency / all-account /
+  wheel-tracker work (M4a–M4g).
   Decisions locked at start: ACB computed **on the fly + transient-cached** (no
   `mm_acb_ledger` table); charts are **hand-rolled inline SVG** (`assets/mm-charts.js`,
   no CDN/deps); one branch, checkpoint commit per theme, one PR at the end. No schema
@@ -236,7 +237,7 @@ Use `dbDelta()` for schema; store a `mm_db_version` option and migrate on upgrad
     `asset_class 'option'`) into the realised list and applies `effects` (keyed by the
     underlying activity row id) to the share trades. Superficial-loss scan skips options
     (own property class).
-* **Milestone 4 — BUILT AND MANUALLY TESTED (same branch, one PR with M3).** Native
+* **Milestone 4 — COMPLETE, merged to `main`** (same branch, same PR as M3). Native
   trading-currency display, all-account holdings, and the automatic options-wheel tracker.
   * **M4a — all-account holdings.** `MM_Tax_ACB` is now scope-agnostic; `MM_Holdings`
     pools **every** account (registered included) so a holdings summary can answer "what
@@ -273,10 +274,57 @@ Use `dbDelta()` for schema; store a `mm_db_version` option and migrate on upgrad
     display_currency, has_data}`; `summary()` feeds the Dashboard card. **Nothing here is
     a tax figure — it measures cash.** `MM_Wheel_Playbook` carries the user's 83 wheel
     rules (13 sections + quick-reference), rendered on the Wheels screen.
-  * Still TODO: the exact Questrade `action`/`type` values for sell-to-open / buy-to-close
-    / expiry / assignment / exercise are inferred, not confirmed against a real feed;
-    the option engine's matched assignments should be eyeballed against practice-account
-    data.
+  * Carried into **M5a**: the exact Questrade `action`/`type` values for sell-to-open /
+    buy-to-close / expiry / assignment / exercise are inferred, not confirmed against a
+    real feed, and the option engine's matched assignments have not been eyeballed
+    against practice-account data. The reconciliation screen is the mechanism that
+    closes this — a mis-classified option row surfaces as a quantity or book-cost
+    mismatch against Questrade's own figures.
+* **Milestone 5 — NEXT: the trust layer.** M1–M4 produce the numbers; M5 makes them
+  *provable* and gets them out of the browser. No new tax math, no new engine.
+  **Decided 2026-09-08:** reconciliation goes first, because it doubles as the
+  acceptance test for the M3f option engine (see the carried-over TODO above).
+  Expected to need **no schema change** — `open_quantity`, `average_entry_price`,
+  `total_cost` and `open_pnl` are already stored on `mm_positions_snapshots` (M2e), and
+  balances are read live. Start from `main` on `milestone-5-trust`.
+  * **M5a — reconciliation screen.** New `MM_Reconcile` (static read-model, no
+    `register()`, like `MM_Holdings`) + a **Reconcile** tab. Per account and symbol,
+    compare what the engine computes against what the broker reports: quantity and
+    pooled cost from `MM_Tax_ACB::get( $accts, 'native' )` vs. the latest
+    `mm_positions_snapshots` row (`open_quantity`, `average_entry_price`, `total_cost`,
+    `open_pnl`), plus account cash / total equity against a live
+    `/v1/accounts/{id}/balances` call (fetched on render, not stored — no new table).
+    Every line green / within tolerance or explained; a mismatched symbol expands to
+    the activities behind it so the cause is traceable. Note that broker book cost and
+    CRA ACB legitimately differ (superficial losses, manual adjustments, journalled
+    shares) — the screen has to distinguish "explained difference" from "bug", not just
+    diff two numbers. Record the **confirmed** Questrade `action`/`type` values here
+    once the practice account walks clean.
+  * **M5b — CSV export.** There is currently no export anywhere in the plugin. Realized
+    dispositions for a chosen tax year (the Schedule 3 figures — CAD, non-registered
+    only), plus holdings and the wheel ledger. `admin_post_mm_export` streaming
+    `fputcsv` to `php://output`; `manage_options` + nonce like every other handler;
+    filename carries slug + year + basis. This is the accountant hand-off — the reason
+    the tax engine exists at all.
+  * **M5c — regression harness. ASK BEFORE BUILDING.** Promote the throwaway stub
+    harness used to sanity-check the ACB/option math into a checked-in,
+    dependency-free PHP script under `tools/` (**no Composer, no PHPUnit, no CI** —
+    see Testing below) with a handful of frozen cases: a pooled-ACB buy/sell walk, a
+    written put through assignment, a cross-year grant + amendment, a superficial loss.
+    The engines are pure static functions over arrays, so this needs only a few
+    `$wpdb` / `__()` stubs, not a WordPress bootstrap.
+  * **M5d — split `MM_Admin`.** It is 3,138 lines / ~121KB — a quarter of the plugin —
+    and every new screen makes it worse. Move each screen's markup into
+    `includes/views/{dashboard,holdings,wheels,gains,adjustments,reconcile,connection,
+    sync,settings}.php`, leaving `MM_Admin` as menu registration, page chrome, asset
+    enqueue, the AJAX handler and the shared formatting helpers. Pure refactor, zero
+    behaviour change. Do it **while** adding the M5a screen, not after.
+  * Deliberately **not** in M5 — candidates for **M6**, all forward-looking rather than
+    historical: playbook rule-compliance scoring against `mm_activities` (which of the
+    83 rules did I actually follow?); wheel-vs-buy-and-hold benchmarking; portfolio
+    XIRR/TWR (currently unanswerable — only per-wheel `annualized` ROC exists); and a
+    pre-trade check answering "if I sell this today, what is the superficial-loss risk
+    and the taxable gain?".
 
 ### Testing
 * **No automated test suite.** The user tests each sub-step manually in the local
@@ -353,10 +401,15 @@ Follow these on every change so future sessions stay consistent.
 
 ## 9. Current Status
 _Last updated: 2026-09-08 — keep this section current._
-* **Milestones 3 + 3f + 4 BUILT AND MANUALLY TESTED on branch `milestone-3-4-dashboard`**
-  (off `main`, local-only — not pushed, not merged). One PR at the end covering all three.
-  No schema change (`DB_VERSION` stays `'1'`). Version `0.3.0`. **User has tested the
-  whole set end-to-end against the practice account and confirmed it works** (2026-09-08).
+* **NEXT UP — Milestone 5, the trust layer** (M5a reconciliation → M5b CSV export →
+  M5c regression harness *(ask first)* → M5d split `MM_Admin`; M6 candidates listed
+  too). See §7. Nothing built yet; start from `main` on `milestone-5-trust`. No schema
+  change expected, so `DB_VERSION` stays `'1'`.
+* **Milestones 3 + 3f + 4 COMPLETE and merged to `main`.** PR #3 squash-merged as
+  `e096504`, branch `milestone-3-4-dashboard` deleted, tagged `v0.3.0`. One PR covered
+  all three. No schema change (`DB_VERSION` stays `'1'`). Version `0.3.0`. **User tested
+  the whole set end-to-end against the practice account and confirmed it works**
+  (2026-09-08).
   * **New files (M3):** `includes/class-mm-{manual-adjustments,tax-acb,
     tax-superficial-loss,holdings}.php`, `assets/mm-charts.js`.
   * **New files (M3f + M4):** `includes/class-mm-{tax-options,money,wheels,
@@ -624,8 +677,8 @@ _Last updated: 2026-09-08 — keep this section current._
   `uninstall.php`. Require order in `money-maker.php`: …fx → money → activities →
   positions → manual-adjustments → tax-options → tax-acb → tax-superficial-loss →
   holdings → wheels → wheel-playbook → sync-log → sync → settings → admin.
-* M1 and M2 fully manually tested and merged to `main`. M3 + M3f + M4 built and manually
-  tested by the user (2026-09-08), on `milestone-3-4-dashboard`, one PR pending.
+* M1–M4 all manually tested and merged to `main` (tagged `v0.1.0` / `v0.2.0` / `v0.3.0`).
+  No work in flight; working tree clean, no open PR.
 * No dependencies, no Composer/npm, no CI, no tests (manual testing only — see §7).
   **Action Scheduler deliberately not bundled** (see M2 sub-step list) — WP-Cron + manual
   button + documented system cron instead.
